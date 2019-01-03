@@ -19,10 +19,13 @@ import warnings
 
 N = 0
 CA = 1
-C = 2
-O = 3
-CB = 4
+CB = 2
+C = 3
+O = 4
 R = 5
+
+ATOM_NAMES=['N', 'CA', 'CB', 'C', 'O']
+assert(R == len(ATOM_NAMES))
 
 def readpdb(fname):
     n = 'het ai an rn ch ri x y z occ bfac elem'.split()
@@ -47,15 +50,47 @@ def readpdb(fname):
 
 
 # N CA C O CB
-# Assumes no glycines
+# assumes unique ascending res numbers
 warnings.filterwarnings("ignore", 'This pattern has match groups')
 def npose_from_file(fname):
     pdpose = readpdb(fname)
 
-    just_my_atoms = pdpose[pdpose.an.str.contains("^(N|CA|C|O|CB)$")]
+    # This evaluates to a regex that looks like this "^(N|CA|CB|C|O)$"
+    just_my_atoms = pdpose[pdpose.an.str.contains("^(%s)$"%('|'.join(ATOM_NAMES)))].copy()
+
+    # Put the atoms in the order we need them
+    just_my_atoms['ind'] = just_my_atoms['ri']*R
+    for i, atom in enumerate(ATOM_NAMES):
+        just_my_atoms['ind'] += (just_my_atoms['an'] == ATOM_NAMES[i])*i
+
+    just_my_atoms = just_my_atoms.sort_values('ind')
+
+    # Fix glycines
+    gb = just_my_atoms.groupby("ri")
+    is_gly = gb.apply(lambda x: len(x) == R-1)
+
+    cb_rows = []
+    for ri in is_gly[is_gly].index:
+        res_df = just_my_atoms[just_my_atoms['ri'] == ri]
+        n_ca_c_df = res_df[res_df.an.str.contains("^(N|CA|C)$")]
+        n_ca_c = n_ca_c_df[['x', 'y', 'z']].values.astype('f8')
+        xform = get_stub_from_n_ca_c(n_ca_c[0], n_ca_c[1], n_ca_c[2])
+        cb = get_CB_from_xform(xform)
+        cb_row = n_ca_c_df.iloc[1].copy()
+        cb_row['an'] = 'CB'
+        cb_row['x'] = cb[0]
+        cb_row['y'] = cb[1]
+        cb_row['z'] = cb[2]
+        cb_row['ind'] = cb_row['ri']*R+CB
+        cb_rows.append(cb_row)
+
+    if ( len(cb_rows) > 0 ):
+        just_my_atoms = just_my_atoms.append(cb_rows)
+        just_my_atoms = just_my_atoms.sort_values('ind')
+
 
     nres = len(just_my_atoms.ri.unique())
-    # Could theoretically place a CB if it's missing
+    # This will trigger if you have multiple res with the same resi for instance
     assert( len(just_my_atoms) / nres == R )
 
     npose = just_my_atoms[['x', 'y', 'z', 'z']].values.astype('f8')
@@ -75,16 +110,11 @@ def itsize(itpose):
 def get_res( npose, resnum):
     return npose[R*resnum:R*(resnum+1)]
 
-
-def get_stub_from_npose(npose, resnum):
-    # core::kinematics::Stub( CA, N, C )
-
-    res = get_res(npose, resnum)
-
-    e1 = res[CA][:3] - res[N][:3]
+def get_stub_from_n_ca_c(n, ca, c):
+    e1 = ca - n
     e1 /= np.linalg.norm(e1)
 
-    e3 = np.cross( e1, res[C][:3] - res[N][:3] )
+    e3 = np.cross( e1, c - n )
     e3 /= np.linalg.norm(e3)
 
     e2 = np.cross( e3, e1 )
@@ -93,10 +123,19 @@ def get_stub_from_npose(npose, resnum):
     stub[...,:3,0] = e1
     stub[...,:3,1] = e2
     stub[...,:3,2] = e3
-    stub[...,:3,3] = res[CA][:3]
+    stub[...,:3,3] = ca
     stub[...,3,3] = 1.0
 
     return stub
+
+def get_stub_from_npose(npose, resnum):
+    # core::kinematics::Stub( CA, N, C )
+
+    res = get_res(npose, resnum)
+
+    return get_stub_from_n_ca_c(res[N,:3], res[CA,:3], res[C,:3])
+
+
 
 _atom_record_format = (
     "ATOM  {atomi:5d} {atomn:^4}{idx:^1}{resn:3s} {chain:1}{resi:4d}{insert:1s}   "
@@ -120,20 +159,26 @@ def format_atom(
 ):
     return _atom_record_format.format(**locals())
 
-_atom_names = [" N  ", " CA ", " C  ", " O  ", " CB "]
+_atom_names = []
+for name in ATOM_NAMES:
+    this_name = " " + name + "       "
+    _atom_names.append(this_name[:4])
 
 def dump_npdb(npose, fname):
     with open(fname, 'w') as out:
-        for i, a in enumerate(npose):
-            out.write( format_atom(
-                atomi=i+1,
-                resn='ALA',
-                resi=int(i/R)+1,
-                atomn=_atom_names[i%R],
-                x=a[0],
-                y=a[1],
-                z=a[2]
-                ))
+        for ri, res in enumerate(npose.reshape(-1, R, 4)):
+            atom_offset = ri*R+1
+            for i, atomi in enumerate([N, CA, C, O, CB]):
+                a = res[atomi]
+                out.write( format_atom(
+                    atomi=atom_offset+i,
+                    resn='ALA',
+                    resi=ri+1,
+                    atomn=_atom_names[atomi],
+                    x=a[0],
+                    y=a[1],
+                    z=a[2]
+                    ))
 
 def xform_to_superimpose_nposes( mobile, mobile_resnum, ref, ref_resnum ):
 
@@ -357,15 +402,15 @@ def xform_from_axis_angle_rad( axis, angle ):
     uz = axis[2]
 
     xform[0, 0] = cos + ux**2*(1-cos)
-    xform[1, 0] = ux*uy*(1-cos) - uz*sin
-    xform[2, 0] = ux*uz*(1-cos) + uy*sin
+    xform[0, 1] = ux*uy*(1-cos) - uz*sin
+    xform[0, 2] = ux*uz*(1-cos) + uy*sin
 
-    xform[0, 1] = uy*ux*(1-cos) + uz*sin
+    xform[1, 0] = uy*ux*(1-cos) + uz*sin
     xform[1, 1] = cos + uy**2*(1-cos)
-    xform[2, 1] = uy*uz*(1-cos) - ux*sin
+    xform[1, 2] = uy*uz*(1-cos) - ux*sin
 
-    xform[0, 2] = uz*ux*(1-cos) - uy*sin
-    xform[1, 2] = uz*uy*(1-cos) + ux*sin
+    xform[2, 0] = uz*ux*(1-cos) - uy*sin
+    xform[2, 1] = uz*uy*(1-cos) + ux*sin
     xform[2, 2] = cos + uz**2*(1-cos)
 
     return xform
@@ -378,6 +423,10 @@ def get_N_from_xform(xform):
 def get_C_from_xform(xform):
     C_pos = np.array([0.55221403, 1.41890368, 0, 1.0])
     return xform @ C_pos
+
+def get_CB_from_xform(xform):
+    CB_pos = np.array([0.52892494, -0.77445692, -1.19923854, 1.0])
+    return xform @ CB_pos
 
 def get_phi_vector(xform):
     N_pos = get_N_from_xform(xform)
@@ -442,7 +491,7 @@ def set_phi(points, tpose, phis, resno, phi, local_R, R_off, R_CA, t_off):
 
     phi_xform = get_phi_rotation_xform(tpose[resno], delta_phi, points[resno*local_R+R_CA])
     new_points = apply_dihedral_to_points(points, phi_xform, resno*local_R+R_off)
-    nwe_tpose = apply_dihedral_to_xforms(points, phi_xform, resno+t_off)
+    new_tpose = apply_dihedral_to_xforms(tpose, phi_xform, resno+t_off)
 
     return new_points, new_tpose, new_phis
 
@@ -450,18 +499,69 @@ def set_npose_psi(npose, tpose, psis, resno, psi):
     return set_psi(npose, tpose, psis, resno, psi, R, C, CA, 1)
 
 def set_ca_psi(points, tpose, psis, resno, phi):
-    return set_phi(points, tpose, psis, resno, psi, 1, 1, 0, 1)
+    return set_psi(points, tpose, psis, resno, psi, 1, 1, 0, 1)
 
 def set_psi(points, tpose, psis, resno, psi, local_R, R_off, R_CA, t_off):
     delta_psi = psi - psis[resno]
     new_psis = psis.copy()
     new_psis[resno] = psi
 
-    psi_xform = get_phi_rotation_xform(tpose[resno], delta_psi, points[resno*local_R+R_CA])
+    psi_xform = get_psi_rotation_xform(tpose[resno], delta_psi, points[resno*local_R+R_CA])
     new_points = apply_dihedral_to_points(points, psi_xform, resno*local_R+R_off)
-    new_tpose = apply_dihedral_to_xforms(points, psi_xform, resno+t_off)
+    new_tpose = apply_dihedral_to_xforms(tpose, psi_xform, resno+t_off)
 
     return new_points, new_tpose, new_psis
+
+
+def get_dihedral(atom1, atom2, atom3, atom4):
+    a = atom2 - atom1
+    a /= np.linalg.norm(a)
+    b = atom3 - atom2
+    b /= np.linalg.norm(b)
+    c = atom4 - atom3
+    c /= np.linalg.norm(c)
+
+    x = -np.dot( a, c ) + ( np.dot( a, b ) * np.dot( b, c) )
+    y = np.dot( a, np.cross( b, c ) )
+
+    angle = 0 if ( y == 0 and x == 0 ) else math.atan2( y, x )
+
+    return angle
+
+
+def get_npose_phis(npose):
+    phis = []
+    phis.append(0)
+
+    for i in range(1, nsize(npose)):
+        offset = i * R
+        phis.append(180/math.pi * get_dihedral( npose[offset-R+C,:3], 
+                                                npose[offset+N,:3],
+                                                npose[offset+CA,:3],
+                                                npose[offset+C,:3] 
+                                               ))
+
+    return np.array(phis)
+
+def get_npose_psis(npose):
+    psis = []
+
+    for i in range(nsize(npose) - 1):
+        offset = i * R
+        psis.append(180/math.pi * get_dihedral( npose[offset-N,:3], 
+                                                npose[offset+CA,:3],
+                                                npose[offset+C,:3],
+                                                npose[offset+R+N,:3] 
+                                               ))
+
+    psis.append(0)
+    return np.array(psis)
+
+
+
+
+
+
 
 
 
