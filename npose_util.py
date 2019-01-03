@@ -10,6 +10,12 @@ import pandas as pd
 import numpy as np
 import warnings
 
+try:
+    from numba import njit
+except:
+    sys.path.append("/home/bcov/sc/random/just_numba")
+    from numba import njit
+
 # Useful numbers
 # N [-1.45837285,  0 , 0]
 # CA [0., 0., 0.]
@@ -498,7 +504,7 @@ def set_phi(points, tpose, phis, resno, phi, local_R, R_off, R_CA, t_off):
 def set_npose_psi(npose, tpose, psis, resno, psi):
     return set_psi(npose, tpose, psis, resno, psi, R, C, CA, 1)
 
-def set_ca_psi(points, tpose, psis, resno, phi):
+def set_ca_psi(points, tpose, psis, resno, psi):
     return set_psi(points, tpose, psis, resno, psi, 1, 1, 0, 1)
 
 def set_psi(points, tpose, psis, resno, psi, local_R, R_off, R_CA, t_off):
@@ -561,7 +567,53 @@ def get_npose_psis(npose):
 
 
 
+# If unit vector is specified. Only points with positive dot products are kept
+def prepare_context_by_dist_and_limits(context, pt, max_dist, unit_vector=None):
+    pt = pt[:3]
+    if ( not unit_vector is None ):
+        vectors = context - pt
+        dots = np.sum( np.multiply(vectors, unit_vector), axis=1)
+        context = context[dots > 0]
+    if ( len(context) == 0):
+        context = np.array([[1000, 1000, 1000]])
+    dists = np.linalg.norm( pt - context, axis=1 )
+    context_dists = zip(context, dists)
+    context_dists = sorted(context_dists, key=lambda x: x[1])
+    context_by_dist, dists = zip(*context_dists)
+    context_by_dist = np.array(context_by_dist)
 
+
+    pos = 0
+    context_dist_limits = []
+    for dist in range(int(max_dist)+1):
+        while ( pos < len(context_by_dist) and dists[pos] < dist ):
+            pos += 1
+        context_dist_limits.append(pos)
+
+    context_dist_limits = np.array(context_dist_limits)
+
+    return context_by_dist, context_dist_limits
+
+# def clash_check_points_context(pts, point_dists, context_by_dist, context_dist_limits, clash_dist, max_clash):
+#     if ( context_by_dist is None):
+#         return 0
+#     return jit_clash_check_points_context(pts, point_dists, context_by_dist, context_dist_limits, clash_dist, max_clash)
+
+@njit(fastmath=True)
+def clash_check_points_context(pts, point_dists, context_by_dist, context_dist_limits, clash_dist, max_clash, tol=0):
+    clashes = 0
+    clash_dist2 = clash_dist * clash_dist
+    pts = pts[:,:3]
+    for ipt in range(len(pts)):
+        pt = pts[ipt]
+        lo_limit = context_dist_limits[max(0, int(point_dists[ipt] - clash_dist - 1 - tol))]
+        limit = context_dist_limits[int(point_dists[ipt] + clash_dist + tol)]
+        context = context_by_dist[lo_limit:limit]
+        clashes += np.sum( np.sum( np.square( pt - context ), axis=1 ) < clash_dist2 )
+
+        if ( clashes >= max_clash ):
+            return clashes
+    return clashes
 
 
 
