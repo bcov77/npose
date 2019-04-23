@@ -12,6 +12,7 @@ import warnings
 
 try:
     from numba import njit
+    from numba import jit
 except:
     sys.path.append("/home/bcov/sc/random/just_numba")
     from numba import njit
@@ -22,16 +23,267 @@ except:
 # C [0.55221403, 1.41890368, 0.        ]
 # CB [ 0.52892494, -0.77445692, -1.19923854]
 
+if ( hasattr(os, 'ATOM_NAMES') ):
+    assert( hasattr(os, 'PDB_ORDER') )
 
-N = 0
-CA = 1
-CB = 2
-C = 3
-O = 4
-R = 5
+    ATOM_NAMES = os.ATOM_NAMES
+    PDB_ORDER = os.PDB_ORDER
+else:
+    ATOM_NAMES=['N', 'CA', 'CB', 'C', 'O']
+    PDB_ORDER = ['N', 'CA', 'C', 'O', 'CB']
 
-ATOM_NAMES=['N', 'CA', 'CB', 'C', 'O']
-assert(R == len(ATOM_NAMES))
+_byte_atom_names = []
+_atom_names = []
+for i, atom_name in enumerate(ATOM_NAMES):
+    long_name = " " + atom_name + "       "
+    _atom_names.append(long_name[:4])
+    _byte_atom_names.append(atom_name.encode())
+
+    globals()[atom_name] = i
+
+R = len(ATOM_NAMES)
+
+if ( "N" not in globals() ):
+    N = -1
+if ( "C" not in globals() ):
+    C = -1
+if ( "CB" not in globals() ):
+    CB = -1
+
+
+_pdb_order = []
+for name in PDB_ORDER:
+    _pdb_order.append( ATOM_NAMES.index(name) )
+
+
+_space = " ".encode()[0]
+@njit(fastmath=True)
+def space_strip(string):
+    start = 0
+    while(start < len(string) and string[start] == _space):
+        start += 1
+    end = len(string)
+    while( end > 0 and string[end-1] == _space):
+        end -= 1
+    return string[start:end]
+
+@njit(fastmath=True)
+def byte_startswith( haystack, needle ):
+    if ( len(haystack) < len(needle) ):
+        return False
+    for i in range(len(needle)):
+        if ( haystack[i] != needle[i] ):
+            return False
+    return True
+
+@njit(fastmath=True)
+def byte_equals( haystack, needle ):
+    if ( len(haystack) != len(needle) ):
+        return False
+    for i in range(len(needle)):
+        if ( haystack[i] != needle[i] ):
+            return False
+    return True
+
+@njit(fastmath=True)
+def getline( bytess, start ):
+    cur = start
+    while (cur < len(bytess) and bytess[cur] != 10 ):
+        cur += 1
+    cur += 1
+    return bytess[start:cur], cur
+
+# ord(" ") == 32
+# ord("-") == 45
+# ord(".") == 46
+# ord("0") == 48
+# ord("9") == 57
+
+@njit(fastmath=True)
+def stof(string):
+    multiplier = 0
+
+    parsed = False
+    negative = 1
+    start = 0
+    end = len(string) - 1
+    for i in range(len(string)):
+        char = string[i]
+        # print(char)
+        if ( not parsed ):
+            if ( char == 32 ): # " "
+                start = i + 1
+                continue
+            if ( char == 45 ): # "-"
+                start = i + 1
+                negative = -1
+                continue
+        if ( char == 32 ): # " "
+            break
+        if ( char == 46 ): # "."
+            multiplier = np.float64(1)
+            parsed = True
+            continue
+        if ( char >= 48 and char <= 57 ): # 0 9
+            parsed = True
+            multiplier /= np.float64(10)
+            end = i
+            continue
+        print("Float parse error! Unrecognized character: ", char)
+        assert(False)
+
+    if ( not parsed ):
+        print("Float parse error!")
+        assert(False)
+
+    result = np.float64(0)
+
+    if ( multiplier == 0 ):
+        multiplier = 1
+    for i in range(end, start-1, -1):
+        char = string[i]
+        if ( char == 46 ): # "."
+            continue
+        value = np.float64(char - 48) # 0
+
+        result += value * multiplier
+        multiplier *= np.float64(10)
+
+    result *= negative
+
+    return np.float32(result)
+
+
+
+_atom = "ATOM".encode()
+_null_line = "ATOM0000000000000000000000000000000000000000000000000000000000".encode()
+_CB = "CB".encode()
+_empty_bytes = "".encode()
+
+# Switches to next residue whenever
+#  Line doesn't start with atom
+#  Line isn't long enough
+#  Res/resnum/chain changes
+@njit(fastmath=True)
+def read_npose_from_data( name, data, byte_atom_names, scratch_residues, _atom, _null_line, _CB, _empty_bytes):
+
+
+    seqpos = 0
+    res_ident = _empty_bytes
+    res_has_n_atoms = 0
+    next_res = False
+    scratch_residues[0].fill(0)
+
+    # lines.append(_nulline)
+
+    cursor = 0
+    keep_going = True
+    while keep_going:
+        line, cursor = getline(data, cursor)
+        if ( cursor >= len(data) ):
+            keep_going = False
+            line = _null_line
+
+        # print(iline)
+
+        if ( not byte_startswith(line, _atom) or len(line) < 54 ):
+            next_res = True
+            res_ident = _empty_bytes
+            continue
+
+        ident = line[17:26]
+        if ( not byte_equals( ident, res_ident ) ):
+            next_res = True
+
+        if ( next_res ):
+            if ( res_has_n_atoms > 0 ):
+
+                res = scratch_residues[seqpos]
+                if ( res_has_n_atoms != R ):
+                    missing = np.where(res[:,3] == 0)[0]
+
+                    # We only know how to fix missing CB
+                    first_missing = byte_atom_names[missing[0]]
+                    if ( len(missing) > 1 or not byte_equals(first_missing,  _CB) ):
+                        err_string = "missing atoms: "
+                        # for i in range(len(missing)):
+                        #     if ( i != 0 ):
+                        #         err_string = err_string + ", "
+                        #     err_string = err_string + byte_atom_names[missing[i]]
+
+                        # err_string = err_string + " in residue: " + res_ident + " before line: "
+                        # err_string = err_string + str(iline)
+                        assert(False)
+
+                    # Fixing CB
+                    xform = get_stub_from_n_ca_c(res[N,:3], res[CA,:3], res[C,:3])
+                    res[CB] = get_CB_from_xform( xform )
+
+
+                seqpos += 1
+                #If we run out of scratch, double its size
+                if ( seqpos == len(scratch_residues) ):
+                    old_size = len(scratch_residues)
+                    new_scratch = np.zeros((old_size*2, R, 4), np.float32)
+                    for i in range(old_size):
+                        new_scratch[i] = scratch_residues[i]
+                    scratch_residues = new_scratch
+
+                scratch_residues[seqpos].fill(0)
+
+            res_ident = ident
+            res_has_n_atoms = 0
+            next_res = False
+
+        # avoid parsing stuff we know we don't need
+        if ( res_has_n_atoms == R ):
+            continue
+
+        atom_name = space_strip(line[12:16])
+
+        # figure out which atom we have
+        atomi = -1
+        for i in range( R ):
+            if ( byte_equals( atom_name, byte_atom_names[i] ) ):
+                atomi = i
+                break
+        if ( atomi == -1 ):
+            continue
+
+        res = scratch_residues[seqpos]
+        if ( res[atomi,3] != 0 ):
+            err_string = "duplicate atom: " #+ atom_name + " in residue: " + res_ident + " at line: " #+ str(iline)
+            assert(False)
+
+        res_has_n_atoms += 1
+
+        res[atomi,0] = stof(line[30:38])
+        res[atomi,1] = stof(line[38:46])
+        res[atomi,2] = stof(line[46:54])
+        res[atomi,3] = 1
+
+    to_ret = np.zeros((seqpos, R, 4))
+    for i in range(seqpos):
+        to_ret[i] = scratch_residues[i]
+    
+    return to_ret.reshape(-1, 4), scratch_residues
+
+
+g_scratch_residues = np.zeros((1000,R,4), np.float32)
+# for i in range(1000):
+#     g_scratch_residues.append(np.zeros((R,4), np.float32))
+
+def npose_from_file_fast(fname):
+    with open(fname, "rb") as f:
+        data = f.read()
+
+    global g_scratch_residues
+
+    npose, scratch = read_npose_from_data( fname, data, _byte_atom_names,  g_scratch_residues,
+            _atom, _null_line, _CB, _empty_bytes)
+
+    g_scratch_residues = scratch
+    return npose.astype(np.float32) # get rid of random numba noise
 
 def readpdb(fname):
     n = 'het ai an rn ch ri x y z occ bfac elem'.split()
@@ -39,21 +291,128 @@ def readpdb(fname):
     assert len(n) is len(w)
     compression = "gzip" if fname.endswith(".gz") else None
     df = pd.read_fwf(fname, widths=w, names=n, compression=compression)
-    df = df[np.logical_or(df.het == 'ATOM', df.het == 'HETATM')]
-    df.het = df.het == 'HETATM'
-    df.ai = df.ai.astype('i4')
-    # df.an = df.an.astype('S4')  
-    # df.rn = df.rn.astype('S3')  
-    # df.ch = df.ch.astype('S1')  
-    df.ri = df.ri.astype('i4')
-    df.x = df.x.astype('f4')
-    df.y = df.y.astype('f4')
-    df.z = df.z.astype('f4')
-    df.occ = df.occ.astype('f4')
-    df.bfac = df.bfac.astype('f4')
-    # df.elem = df.elem.astype('S4')  
+    df = df.dropna(subset=['x'])
+
+    # df = df[np.logical_or(df.het == 'ATOM', df.het == 'HETATM')]
+    # df.het = df.het == 'HETATM' # slow af
+
+    # df.ai = df.ai.astype('i4')
+    # # df.an = df.an.astype('S4')  
+    # # df.rn = df.rn.astype('S3')  
+    # # df.ch = df.ch.astype('S1')  
+    # df.ri = df.ri.astype('i4')
+    # df.x = df.x.astype('f4')
+    # df.y = df.y.astype('f4')
+    # df.z = df.z.astype('f4')
+    # df.occ = df.occ.astype('f4')
+    # df.bfac = df.bfac.astype('f4')
+    # # df.elem = df.elem.astype('S4')  
     return df
 
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
+@njit(fastmath=True)
+def cross(vec1, vec2):
+    result = np.zeros(3)
+    a1, a2, a3 = vec1[0], vec1[1], vec1[2]
+    b1, b2, b3 = vec2[0], vec2[1], vec2[2]
+    result[0] = a2 * b3 - a3 * b2
+    result[1] = a3 * b1 - a1 * b3
+    result[2] = a1 * b2 - a2 * b1
+    return result
+
+
+def get_just_my_atoms(pdpose):
+    return pdpose[pdpose.an.str.contains("^(%s)$"%('|'.join(ATOM_NAMES)))].copy()
+
+def add_my_resnum(just_my_atoms):
+    just_my_atoms['my_resnum'] = (just_my_atoms['ri'] != just_my_atoms['ri'].shift(1).fillna(-1)).cumsum()
+
+
+def atom_thing(just_my_atoms):
+
+    the_map = {}
+    for i, atom in enumerate(ATOM_NAMES):
+        the_map[atom] = i
+
+    just_my_atoms['ind'] = just_my_atoms['my_resnum']*R + just_my_atoms['an'].map(the_map)
+
+    return just_my_atoms
+
+
+
+def the_sort(just_my_atoms):
+    return just_my_atoms.sort_values('ind')
+
+def gb(just_my_atoms):
+    gb = just_my_atoms.groupby("my_resnum")
+    is_gly = gb.apply(lambda x: len(x) == R-1)
+    return is_gly
+
+def for_loop(just_my_atoms, is_gly):
+
+    cb_rows = []
+    for resnum in is_gly[is_gly].index:
+        res_df = just_my_atoms[just_my_atoms['my_resnum'] == resnum]
+        n_ca_c_df = res_df[res_df.an.str.contains("^(N|CA|C)$")]
+        n_ca_c = n_ca_c_df[['x', 'y', 'z']].values.astype('f8')
+        xform = get_stub_from_n_ca_c(n_ca_c[0], n_ca_c[1], n_ca_c[2])
+        cb = get_CB_from_xform(xform)
+        cb_row = n_ca_c_df.iloc[1].copy()
+        cb_row['an'] = 'CB'
+        cb_row['x'] = cb[0]
+        cb_row['y'] = cb[1]
+        cb_row['z'] = cb[2]
+        cb_row['ind'] = cb_row['my_resnum']*R+CB
+        cb_rows.append(cb_row)
+
+    return cb_rows
+
+def actual_append(just_my_atoms, cb_rows):
+    return just_my_atoms.append(cb_rows, sort)
+
+def actual_sort(just_my_atoms):
+    return just_my_atoms.sort_values('ind')
+
+def appenddd(just_my_atoms, cb_rows):
+    if ( len(cb_rows) > 0 ):
+        just_my_atoms = actual_append(just_my_atoms, cb_rows) #just_my_atoms.append(cb_rows)
+        just_my_atoms = actual_sort(just_my_atoms) #just_my_atoms.sort_values('ind')
+    return just_my_atoms
+
+def fix_gly(just_my_atoms):
+    # gb = just_my_atoms.groupby("my_resnum")
+    # is_gly = gb.apply(lambda x: len(x) == R-1)
+
+    is_gly = gb(just_my_atoms)
+
+    cb_rows = for_loop(just_my_atoms, is_gly)
+    # cb_rows = []
+    # for resnum in is_gly[is_gly].index:
+    #     res_df = just_my_atoms[just_my_atoms['my_resnum'] == resnum]
+    #     n_ca_c_df = res_df[res_df.an.str.contains("^(N|CA|C)$")]
+    #     n_ca_c = n_ca_c_df[['x', 'y', 'z']].values.astype('f8')
+    #     xform = get_stub_from_n_ca_c(n_ca_c[0], n_ca_c[1], n_ca_c[2])
+    #     cb = get_CB_from_xform(xform)
+    #     cb_row = n_ca_c_df.iloc[1].copy()
+    #     cb_row['an'] = 'CB'
+    #     cb_row['x'] = cb[0]
+    #     cb_row['y'] = cb[1]
+    #     cb_row['z'] = cb[2]
+    #     cb_row['ind'] = cb_row['my_resnum']*R+CB
+    #     cb_rows.append(cb_row)
+
+    just_my_atoms = appenddd(just_my_atoms, cb_rows)
+    # if ( len(cb_rows) > 0 ):
+    #     just_my_atoms = just_my_atoms.append(cb_rows)
+    #     just_my_atoms = just_my_atoms.sort_values('ind')
+    return just_my_atoms
+
+def crafting(just_my_atoms):
+    npose = just_my_atoms[['x', 'y', 'z', 'z']].values.astype('f8')
+    npose[:,3] = 1.0
+    return npose
 
 # N CA C O CB
 # assumes unique ascending res numbers
@@ -64,41 +423,53 @@ def npose_from_file(fname):
     # This evaluates to a regex that looks like this "^(N|CA|CB|C|O)$"
     just_my_atoms = pdpose[pdpose.an.str.contains("^(%s)$"%('|'.join(ATOM_NAMES)))].copy()
 
-    # Put the atoms in the order we need them
-    just_my_atoms['ind'] = just_my_atoms['ri']*R
-    for i, atom in enumerate(ATOM_NAMES):
-        just_my_atoms['ind'] += (just_my_atoms['an'] == ATOM_NAMES[i])*i
+    # This identifies places where the previous resnum is not equal to this resnum
+    # i.e. the first atom of every residue
+    just_my_atoms['my_resnum'] = (just_my_atoms['ri'] != just_my_atoms['ri'].shift(1).fillna(-1)).cumsum()
 
+    nres = len(just_my_atoms.my_resnum.unique())
+
+
+    # Put the atoms in the order we need them
+    the_map = {}
+    for i, atom in enumerate(ATOM_NAMES):
+        the_map[atom] = i
+
+    just_my_atoms['ind'] = just_my_atoms['my_resnum']*R + just_my_atoms['an'].map(the_map)
     just_my_atoms = just_my_atoms.sort_values('ind')
 
-    # Fix glycines
-    gb = just_my_atoms.groupby("ri")
-    is_gly = gb.apply(lambda x: len(x) == R-1)
 
-    cb_rows = []
-    for ri in is_gly[is_gly].index:
-        res_df = just_my_atoms[just_my_atoms['ri'] == ri]
-        n_ca_c_df = res_df[res_df.an.str.contains("^(N|CA|C)$")]
-        n_ca_c = n_ca_c_df[['x', 'y', 'z']].values.astype('f8')
-        xform = get_stub_from_n_ca_c(n_ca_c[0], n_ca_c[1], n_ca_c[2])
-        cb = get_CB_from_xform(xform)
-        cb_row = n_ca_c_df.iloc[1].copy()
-        cb_row['an'] = 'CB'
-        cb_row['x'] = cb[0]
-        cb_row['y'] = cb[1]
-        cb_row['z'] = cb[2]
-        cb_row['ind'] = cb_row['ri']*R+CB
-        cb_rows.append(cb_row)
+    if ( len(just_my_atoms) / nres != R ):
+        # just_my_atoms = fix_gly(just_my_atoms)
+        # Fix glycines
+        gb = just_my_atoms.groupby("my_resnum")
+        is_gly = gb.apply(lambda x: len(x) == R-1)
 
-    if ( len(cb_rows) > 0 ):
-        just_my_atoms = just_my_atoms.append(cb_rows)
-        just_my_atoms = just_my_atoms.sort_values('ind')
+        cb_rows = []
+        for resnum in is_gly[is_gly].index:
+            res_df = just_my_atoms[just_my_atoms['my_resnum'] == resnum]
+            n_ca_c_df = res_df[res_df.an.str.contains("^(N|CA|C)$")]
+            n_ca_c = n_ca_c_df[['x', 'y', 'z']].values.astype('f8')
+            xform = get_stub_from_n_ca_c(n_ca_c[0], n_ca_c[1], n_ca_c[2])
+            cb = get_CB_from_xform(xform)
+            cb_row = n_ca_c_df.iloc[1].copy()
+            cb_row['an'] = 'CB'
+            cb_row['x'] = cb[0]
+            cb_row['y'] = cb[1]
+            cb_row['z'] = cb[2]
+            cb_row['ind'] = cb_row['my_resnum']*R+CB
+            cb_rows.append(cb_row)
+
+        if ( len(cb_rows) > 0 ):
+            just_my_atoms = just_my_atoms.append(cb_rows, sort=False)
+            just_my_atoms = just_my_atoms.sort_values('ind')
 
 
-    nres = len(just_my_atoms.ri.unique())
-    # This will trigger if you have multiple res with the same resi for instance
+    # nres = len(just_my_atoms.my_resnum.unique())
+    # This will tosgger if you have multiple res with the same resi for instance
     assert( len(just_my_atoms) / nres == R )
 
+    # npose = crafting(just_my_atoms)
     npose = just_my_atoms[['x', 'y', 'z', 'z']].values.astype('f8')
     npose[:,3] = 1.0
 
@@ -116,16 +487,35 @@ def itsize(itpose):
 def get_res( npose, resnum):
     return npose[R*resnum:R*(resnum+1)]
 
+@njit(fastmath=True)
 def get_stub_from_n_ca_c(n, ca, c):
     e1 = ca - n
     e1 /= np.linalg.norm(e1)
 
-    e3 = np.cross( e1, c - n )
+    e3 = cross( e1, c - n )
     e3 /= np.linalg.norm(e3)
 
-    e2 = np.cross( e3, e1 )
+    e2 = cross( e3, e1 )
 
-    stub = np.zeros((4, 4))
+    stub = np.zeros((4, 4), np.float32)
+    stub[...,:3,0] = e1
+    stub[...,:3,1] = e2
+    stub[...,:3,2] = e3
+    stub[...,:3,3] = ca
+    stub[...,3,3] = 1.0
+
+    return stub
+
+def get_stubs_from_n_ca_c(n, ca, c):
+    e1 = ca - n
+    e1 = np.divide( e1, np.linalg.norm(e1, axis=1)[..., None] )
+
+    e3 = np.cross( e1, c - n, axis=1 )
+    e3 = np.divide( e3, np.linalg.norm(e3, axis=1)[..., None] )
+
+    e2 = np.cross( e3, e1, axis=1 )
+
+    stub = np.zeros((len(n), 4, 4))
     stub[...,:3,0] = e1
     stub[...,:3,1] = e2
     stub[...,:3,2] = e3
@@ -141,7 +531,12 @@ def get_stub_from_npose(npose, resnum):
 
     return get_stub_from_n_ca_c(res[N,:3], res[CA,:3], res[C,:3])
 
+def get_stubs_from_npose( npose ):
+    ns  = extract_atoms(npose, [N])
+    cas = extract_atoms(npose, [CA])
+    cs  = extract_atoms(npose, [C])
 
+    return get_stubs_from_n_ca_c(ns[:,:3], cas[:,:3], cs[:,:3])
 
 _atom_record_format = (
     "ATOM  {atomi:5d} {atomn:^4}{idx:^1}{resn:3s} {chain:1}{resi:4d}{insert:1s}   "
@@ -165,21 +560,19 @@ def format_atom(
 ):
     return _atom_record_format.format(**locals())
 
-_atom_names = []
-for name in ATOM_NAMES:
-    this_name = " " + name + "       "
-    _atom_names.append(this_name[:4])
 
-def dump_npdb(npose, fname):
+def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order):
+    assert(len(atoms_present) == len(pdb_order))
+    local_R = len(atoms_present)
     with open(fname, 'w') as out:
-        for ri, res in enumerate(npose.reshape(-1, R, 4)):
-            atom_offset = ri*R+1
-            for i, atomi in enumerate([N, CA, C, O, CB]):
-                a = res[atomi]
+        for ri, res in enumerate(npose.reshape(-1, local_R, 4)):
+            atom_offset = ri*local_R+1
+            for i, atomi in enumerate(pdb_order):
+                a = res[atoms_present.index(atomi)]
                 out.write( format_atom(
-                    atomi=atom_offset+i,
+                    atomi=(atom_offset+i)%100000,
                     resn='ALA',
-                    resi=ri+1,
+                    resi=(ri+1)%10000,
                     atomn=_atom_names[atomi],
                     x=a[0],
                     y=a[1],
@@ -200,6 +593,8 @@ def xform_to_superimpose_nposes( mobile, mobile_resnum, ref, ref_resnum ):
 def xform_npose(xform, npose):
     return (xform @ npose[...,None]).reshape(-1, 4)
 
+def extract_atoms(npose, atoms):
+    return npose.reshape(-1, R, 4)[...,atoms,:].reshape(-1,4)
 
 def extract_N_CA_C(npose):
     indices = []
@@ -222,17 +617,11 @@ def calc_rmsd(npose1, npose2):
     return math.sqrt(np.sum(np.square(np.linalg.norm(npose1[:,:-3] - npose2[:,:-3], axis=0))) / ( len(npose1) ))
 
 def tpose_from_npose( npose ):
-    tpose = []
-    for i in range(nsize(npose)):
-        tpose.append(get_stub_from_npose(npose, i))
-    return np.stack(tpose)
+    return get_stubs_from_npose( npose )
+
 
 def itpose_from_tpose( tpose ):
-    itpose = []
-    for tres in tpose:
-        itpose.append(np.linalg.inv(tres))
-    return np.stack(itpose)
-
+    return np.linalg.inv(tpose)
 
 
 def my_rstrip(string, strip):
@@ -246,25 +635,27 @@ def get_tag(fname):
     return my_rstrip(my_rstrip(name, ".gz"), ".pdb")
 
 
+# _resl = 0.5
+# _atom_size = 5 - _resl
 #Bounds are lb, ub, resl
-def clashgrid_from_npose(npose):#, bounds=None, add_to_this=None):
-    return clashgrid_from_points( extract_CA(npose))#, add_to_this)
+
+#num_clashes = clash_grid.arr[tuple(clash_grid.floats_to_indices(xformed_cas).T)].sum()
+def ca_clashgrid_from_npose(npose, atom_size, resl):
+    return clashgrid_from_points( extract_CA(npose))
 
 #Bounds are lb, ub, resl
-def clashgrid_from_tpose(tpose):#, bounds=None, add_to_this=None):
-    return clashgrid_from_points( points_from_tpose(tpose))#, add_to_this)
+def clashgrid_from_tpose(tpose, atom_size, resl):
+    return clashgrid_from_points( points_from_tpose(tpose))
 
-_resl = 0.5
-_atom_size = 5 - _resl
-def clashgrid_from_points(points):
+def clashgrid_from_points(points, atom_size, resl):
     points = points[:,:3]
-    low = np.min(points, axis=0) - _atom_size - _resl*2
-    high = np.max(points, axis=0) + _atom_size + _resl*2
+    low = np.min(points, axis=0) - atom_size*2 - resl*2
+    high = np.max(points, axis=0) + atom_size*2 + resl*2
 
-    clashgrid = voxel_array.VoxelArray(low, high, np.array([_resl]*3), bool)
+    clashgrid = voxel_array.VoxelArray(low, high, np.array([resl]*3), bool)
 
     for pt in points:
-        inds = clashgrid.indices_within_x_of(_atom_size, pt)
+        inds = clashgrid.indices_within_x_of(atom_size*2, pt)
         clashgrid.arr[tuple(inds.T)] = True
 
     return clashgrid
@@ -430,8 +821,9 @@ def get_C_from_xform(xform):
     C_pos = np.array([0.55221403, 1.41890368, 0, 1.0])
     return xform @ C_pos
 
+@njit(fastmath=True)
 def get_CB_from_xform(xform):
-    CB_pos = np.array([0.52892494, -0.77445692, -1.19923854, 1.0])
+    CB_pos = np.array([0.52892494, -0.77445692, -1.19923854, 1.0], dtype=np.float32)
     return xform @ CB_pos
 
 def get_phi_vector(xform):
@@ -617,5 +1009,84 @@ def clash_check_points_context(pts, point_dists, context_by_dist, context_dist_l
 
 
 
+def xform_magnitude_sq( rts, lever2 ):
+
+    trans_part = rts[...,:3,3]
+    err_trans2 = np.sum(np.square(trans_part), axis=-1)
+
+    rot_part = rts[...,:3,:3]
+    traces = np.trace(rot_part,axis1=-1,axis2=-2)
+    cos_theta = ( traces - 1 ) / 2
+
+    # We clip to 0 here so that negative cos_theta gets lever as error
+    clipped_cos = np.clip( cos_theta, 0, 1)
+
+    err_rot2 = ( 1 - np.square(cos_theta) ) * lever2
+
+    # err = np.sqrt( err_trans2 + err_rot2 )
+    err =  err_trans2 + err_rot2 
+
+    return err
+
+def xform_magnitude( rts, lever2 ):
+
+    return np.sqrt( xform_magnitude_sq( rts, lever2 ) )
+
+
+# This would be better if it found the center of each cluster
+# This requires nxn of each cluster though
+def cluster_xforms( close_thresh, lever, xforms, inverse_xforms = None, info_every=None ):
+    if ( inverse_xforms is None ):
+        inverse_xforms = np.linalg.inv(xforms)
+
+    size = len(xforms)
+    min_distances = np.zeros(size, float)
+    min_distances.fill(9e9)
+    assignments = np.zeros(size, int)
+    center_indices = []
+
+    lever2 = lever*lever
+
+    cur_index = 0
+
+    while ( np.sqrt(min_distances.max()) > close_thresh ):
+
+        distances = xform_magnitude_sq( inverse_xforms[cur_index] @ xforms, lever2 )
+
+        changes = distances < min_distances
+        assignments[changes] = cur_index
+        min_distances[changes] = distances[changes]
+
+        center_indices.append( cur_index )
+        cur_index = min_distances.argmax()
+
+        if ( not info_every is None ):
+            if ( len(center_indices) % info_every == 0 ):
+                print("Cluster round %i: max_dist: %6.3f   %8i"%(len(center_indices), np.sqrt(min_distances[cur_index]), cur_index))
+
+    return center_indices, assignments
+
+
+def center_of_mass( coords ):
+    com = np.sum( coords, axis=-2 ) / coords.shape[-2]
+    return com
+
+def radius_of_gyration( coords, com=None):
+    if (com is None):
+        com = center_of_mass(coords)
+
+    # The extra 1s will cancel here
+    dist_from_com2 = np.square(np.sum( coords - com, axis=-1))
+
+    return np.sqrt( np.sum(dist_from_com2) / coords.shape[-2] )
+
+def xform_from_flat( twelve ):
+    xform = np.identity(4)
+    xform[:3,:3].flat = twelve[:9]
+    xform[:3,3].flat = twelve[9:]
+    return xform
+
+def flat_from_xform( xform ):
+    return list(xform[:3,:3].flat) + list(xform[:3,3].flat)
 
 
