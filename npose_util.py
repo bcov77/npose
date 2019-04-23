@@ -13,6 +13,7 @@ import warnings
 try:
     from numba import njit
     from numba import jit
+    import numba
 except:
     sys.path.append("/home/bcov/sc/random/just_numba")
     from numba import njit
@@ -88,6 +89,9 @@ def byte_equals( haystack, needle ):
 @njit(fastmath=True)
 def getline( bytess, start ):
     cur = start
+    if ( start + 78 < len(bytess) ):
+        if ( bytess[start+78] == 10 ):
+            return bytess[start:start+79], start+79
     while (cur < len(bytess) and bytess[cur] != 10 ):
         cur += 1
     cur += 1
@@ -155,18 +159,32 @@ def stof(string):
 
 
 
-_atom = "ATOM".encode()
-_null_line = "ATOM0000000000000000000000000000000000000000000000000000000000".encode()
-_CB = "CB".encode()
-_empty_bytes = "".encode()
+# _atom = "ATOM".encode()
+_null_line = "ATOMCB00000000000000000000000000000000000000000000000000000000"#.encode()
+_null_line_size = len(_null_line)
+
+# _CB = "CB".encode()
+# _empty_bytes = "".encode()
 
 # Switches to next residue whenever
 #  Line doesn't start with atom
 #  Line isn't long enough
 #  Res/resnum/chain changes
 @njit(fastmath=True)
-def read_npose_from_data( name, data, byte_atom_names, scratch_residues, _atom, _null_line, _CB, _empty_bytes):
+def read_npose_from_data( data, null_line_atom_names, scratch_residues):
 
+
+    _null_line = null_line_atom_names[:_null_line_size]
+    array_byte_atom_names = null_line_atom_names[_null_line_size:]
+
+    _CB = _null_line[4:6]
+    _atom = _null_line[:4]
+    _empty_bytes = _null_line[:0]
+
+    byte_atom_names = []
+    for i in range(len(array_byte_atom_names)//4):
+        aname = array_byte_atom_names[i*4:i*4+4]
+        byte_atom_names.append(space_strip(aname))
 
     seqpos = 0
     res_ident = _empty_bytes
@@ -273,14 +291,22 @@ g_scratch_residues = np.zeros((1000,R,4), np.float32)
 # for i in range(1000):
 #     g_scratch_residues.append(np.zeros((R,4), np.float32))
 
+_array_byte_atom_names = list(" "*len(_byte_atom_names)*4)
+for i in range(len(_byte_atom_names)):
+    name = _atom_names[i]
+    for j in range(len(name)):
+        _array_byte_atom_names[i*4+j] = name[j]
+_array_atom_names = "".join(_array_byte_atom_names)
+
+_null_line_atom_names = (_null_line + _array_atom_names).encode()
+
 def npose_from_file_fast(fname):
     with open(fname, "rb") as f:
         data = f.read()
 
     global g_scratch_residues
 
-    npose, scratch = read_npose_from_data( fname, data, _byte_atom_names,  g_scratch_residues,
-            _atom, _null_line, _CB, _empty_bytes)
+    npose, scratch = read_npose_from_data( data, _null_line_atom_names,  g_scratch_residues)
 
     g_scratch_residues = scratch
     return npose.astype(np.float32) # get rid of random numba noise
