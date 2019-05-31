@@ -89,9 +89,6 @@ def byte_equals( haystack, needle ):
 @njit(fastmath=True)
 def getline( bytess, start ):
     cur = start
-    if ( start + 78 < len(bytess) ):
-        if ( bytess[start+78] == 10 ):
-            return bytess[start:start+79], start+79
     while (cur < len(bytess) and bytess[cur] != 10 ):
         cur += 1
     cur += 1
@@ -319,7 +316,7 @@ def readpdb(fname):
     df = pd.read_fwf(fname, widths=w, names=n, compression=compression)
     df = df.dropna(subset=['x'])
 
-    # df = df[np.logical_or(df.het == 'ATOM', df.het == 'HETATM')]
+    df = df[df.het == 'ATOM']
     # df.het = df.het == 'HETATM' # slow af
 
     # df.ai = df.ai.astype('i4')
@@ -667,11 +664,11 @@ def get_tag(fname):
 
 #num_clashes = clash_grid.arr[tuple(clash_grid.floats_to_indices(xformed_cas).T)].sum()
 def ca_clashgrid_from_npose(npose, atom_size, resl):
-    return clashgrid_from_points( extract_CA(npose))
+    return clashgrid_from_points( extract_CA(npose), atom_size, resl)
 
 #Bounds are lb, ub, resl
 def clashgrid_from_tpose(tpose, atom_size, resl):
-    return clashgrid_from_points( points_from_tpose(tpose))
+    return clashgrid_from_points( points_from_tpose(tpose), atom_size, resl)
 
 def clashgrid_from_points(points, atom_size, resl):
     points = points[:,:3]
