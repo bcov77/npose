@@ -95,7 +95,58 @@ def get_stub_from_res(res):
     return get_stub_from_n_ca_c(from_vector(res.xyz("N")), from_vector(res.xyz("CA")), from_vector(res.xyz("C")))
 
 
+def get_atoms_and_radii(pose, subset=None):
 
+    atoms = []
+    radii = []
+
+    for seqpos in range(1, pose.size()+1):
+        if ( not subset is None ):
+            if ( not subset[seqpos] ):
+                continue
+        res = pose.residue(seqpos)
+        for iatom in range(1, res.natoms()+1):
+            atoms.append(from_vector(res.xyz(iatom)))
+            radii.append(res.atom_type(iatom).lj_radius())
+
+    return np.array(atoms), np.array(radii)
+
+
+
+
+def get_sasa_surface(pose, probe_size=2.2, resl=0.5):
+
+    atomic_depth = core.scoring.atomic_depth.AtomicDepth(pose, probe_size, False, resl, False)
+
+    vertices = atomic_depth.get_surface_vertices()
+    verts = np.zeros((len(vertices), 3))
+    vert_normals = np.zeros((len(vertices), 3))
+
+    for i in range(len(vertices)):
+        vert = vertices[i]
+        verts[i, 0] = vert.x
+        verts[i, 1] = vert.y
+        verts[i, 2] = vert.z
+        vert_normals[i,0] = vert.pn.x
+        vert_normals[i,1] = vert.pn.y
+        vert_normals[i,2] = vert.pn.z
+
+
+    faces = atomic_depth.get_surface_faces()
+    face_centers = np.zeros((len(faces), 3))
+    face_normals = np.zeros((len(faces), 3))
+    face_areas = np.zeros(len(faces))
+
+    for i in range(len(faces)):
+        face = faces[i]
+        face_centers[i] = (verts[face.a] + verts[face.b] + verts[face.c]) / 3
+        face_normals[i,0] = face.pn.x
+        face_normals[i,1] = face.pn.y
+        face_normals[i,2] = face.pn.z
+        face_areas[i] = face.area
+
+
+    return verts, vert_normals, face_centers, face_normals, face_areas
 
 
 

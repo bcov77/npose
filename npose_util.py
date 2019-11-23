@@ -9,6 +9,7 @@ import voxel_array
 import pandas as pd
 import numpy as np
 import warnings
+import gzip
 
 try:
     from numba import njit
@@ -55,6 +56,13 @@ if ( "CB" not in globals() ):
 _pdb_order = []
 for name in PDB_ORDER:
     _pdb_order.append( ATOM_NAMES.index(name) )
+
+
+def gzopen(name, mode="rt"):
+    if (name.endswith(".gz")):
+        return gzip.open(name, mode)
+    else:
+        return open(name, mode)
 
 
 _space = " ".encode()[0]
@@ -298,7 +306,7 @@ _array_atom_names = "".join(_array_byte_atom_names)
 _null_line_atom_names = (_null_line + _array_atom_names).encode()
 
 def npose_from_file_fast(fname):
-    with open(fname, "rb") as f:
+    with gzopen(fname, "rb") as f:
         data = f.read()
 
     global g_scratch_residues
@@ -563,7 +571,7 @@ def get_stubs_from_npose( npose ):
 
 _atom_record_format = (
     "ATOM  {atomi:5d} {atomn:^4}{idx:^1}{resn:3s} {chain:1}{resi:4d}{insert:1s}   "
-    "{x:8.3f}{y:8.3f}{z:8.3f}{occ:6.2f}{b:6.2f}\n"
+    "{x:8.3f}{y:8.3f}{z:8.3f}{occ:6.2f}{b:6.2f}{seg:-4d}{elem:2s}\n"
 )
 
 
@@ -579,7 +587,9 @@ def format_atom(
         y=0,
         z=0,
         occ=1,
-        b=0
+        b=0,
+        seg=1,
+        elem=''
 ):
     return _atom_record_format.format(**locals())
 
@@ -599,8 +609,39 @@ def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order):
                     atomn=_atom_names[atomi],
                     x=a[0],
                     y=a[1],
-                    z=a[2]
+                    z=a[2],
                     ))
+
+
+def dump_pts(pts, name):
+    with open(name, "w") as f:
+        for ivert, vert in enumerate(pts):
+            f.write(format_atom(ivert%100000, resi=ivert%10000, x=vert[0], y=vert[1], z=vert[2]))
+
+def dump_lines(starts, directions, length, name):
+
+    starts = np.array(starts)
+    if ( len(starts.shape) == 1 ):
+        starts = np.tile(starts, (len(directions), 1))
+
+    directions = np.array(directions)
+
+    vec = np.linspace(0, length, 20)
+
+    pt_collections = []
+
+    for i in range(len(starts)):
+        start = starts[i]
+        direction = directions[i]
+
+        pts = start + direction*vec[:,None]
+        pt_collections.append(pts)
+
+    pts = np.concatenate(pt_collections)
+
+    dump_pts(pts, name)
+
+
 
 def xform_to_superimpose_nposes( mobile, mobile_resnum, ref, ref_resnum ):
 
@@ -677,11 +718,31 @@ def clashgrid_from_points(points, atom_size, resl):
 
     clashgrid = voxel_array.VoxelArray(low, high, np.array([resl]*3), bool)
 
-    for pt in points:
-        inds = clashgrid.indices_within_x_of(atom_size*2, pt)
-        clashgrid.arr[tuple(inds.T)] = True
+    clashgrid.add_to_clashgrid(points, atom_size)
+    # for pt in points:
+    #     inds = clashgrid.indices_within_x_of(atom_size*2, pt)
+    #     clashgrid.arr[tuple(inds.T)] = True
 
     return clashgrid
+
+
+def nearest_object_grid(objects, atom_size=3.5, resl=0.25, padding=0, store=None):
+
+    objects = objects[:,:3]
+
+    low = np.min(objects, axis=0) - atom_size*2 - resl*2  - padding
+    high = np.max(objects, axis=0) + atom_size*2 + resl*2 + padding
+        
+    nearest_object = voxel_array.VoxelArray(low, high, np.array([resl]*3), np.int32)
+    nearest_dist = voxel_array.VoxelArray(low, high, np.array([resl]*3), np.float32)
+
+    nearest_object.arr.fill(-1)
+    nearest_dist.arr.fill(1000)
+
+    nearest_object.add_to_near_grid(objects, atom_size, nearest_dist, store)
+
+    return nearest_object, nearest_dist
+
 
 def xforms_from_four_points(c, u, v, w):
     c = c[...,:3]
@@ -1031,6 +1092,25 @@ def clash_check_points_context(pts, point_dists, context_by_dist, context_dist_l
     return clashes
 
 
+def xform_magnitude_sq_fast( trans_err2, traces, lever2 ):
+
+    # trans_part = rts[...,:3,3]
+    # err_trans2 = np.sum(np.square(trans_part), axis=-1)
+
+    # rot_part = rts[...,:3,:3]
+    # traces = np.trace(rot_part,axis1=-1,axis2=-2)
+    cos_theta = ( traces - 1 ) / 2
+
+    # We clip to 0 here so that negative cos_theta gets lever as error
+    clipped_cos = np.clip( cos_theta, 0, 1)
+
+    err_rot2 = ( 1 - np.square(cos_theta) ) * lever2
+
+    # err = np.sqrt( err_trans2 + err_rot2 )
+    err =  trans_err2 + err_rot2 
+
+    return err
+
 
 def xform_magnitude_sq( rts, lever2 ):
 
@@ -1055,12 +1135,60 @@ def xform_magnitude( rts, lever2 ):
 
     return np.sqrt( xform_magnitude_sq( rts, lever2 ) )
 
+#a00 a01 a02 a03
+#a10 a11 a12 a13
+#a20 a21 a22 a23
+#a30 a31 a32 a33
+
+#b00 b01 b02 b03
+#b10 b11 b12 b13
+#b20 b21 b22 b23
+#b30 b31 b32 b33
+
+# c = a @ b
+#
+# c00 = b00 a00 * b10 a01 * b20 a02 * b30 a03
+
+# c11 = b01 a10 * b11 a11 * b21 a12 * b31 a13
+
+# c22 = b02 a20 * b12 a21 * b22 a22 * b32 a23
+
+# c03 = b03 a00 * b13 a01 * b23 a02 * b33 a03
+# c13 = b03 a10 * b13 a11 * b23 a12 * b33 a13
+# c23 = b03 a20 * b13 a21 * b23 a22 * b33 a23
+
+@njit(fastmath=True)
+def mm2(inv_xform, xforms, traces, trans_err2):
+
+    a = inv_xform
+    b = xforms
+
+    # leaving out the 4th term because we know it's 0
+    traces[:] = np.sum( a[0,:3] * b[:,:3,0], axis=-1 )
+    traces += np.sum( a[1,:3] * b[:,:3,1], axis=-1 )
+    traces += np.sum( a[2,:3] * b[:,:3,2], axis=-1 )
+
+    # we know the 4th term here has a 1 in b
+    trans_err2[:] = np.square(np.sum( a[0,:3] * b[:,:3,3], axis=-1) + a[0,3])
+    trans_err2 += np.square(np.sum( a[1,:3] * b[:,:3,3], axis=-1) + a[1,3])
+    trans_err2 += np.square(np.sum( a[2,:3] * b[:,:3,3], axis=-1) + a[2,3])
+
+
+def mm1(inverse_xforms, cur_index, xforms, out):
+    np.matmul(inverse_xforms[cur_index], xforms, out=out)
 
 # This would be better if it found the center of each cluster
 # This requires nxn of each cluster though
 def cluster_xforms( close_thresh, lever, xforms, inverse_xforms = None, info_every=None ):
+
+    if ( xforms.dtype != np.float32 ):
+        xforms = xforms.astype(np.float32)
+
     if ( inverse_xforms is None ):
         inverse_xforms = np.linalg.inv(xforms)
+    else:
+        if ( inverse_xforms.dtype != inverse_xforms ):
+            inverse_xforms = inverse_xforms.astype(np.float32)
 
     size = len(xforms)
     min_distances = np.zeros(size, float)
@@ -1072,9 +1200,21 @@ def cluster_xforms( close_thresh, lever, xforms, inverse_xforms = None, info_eve
 
     cur_index = 0
 
+    traces = np.zeros(len(xforms), dtype=np.float32)
+    trans_err2 = np.zeros(len(xforms), dtype=np.float32)
+
+    out = np.zeros((len(xforms), 4, 4), dtype=np.float32)
+
     while ( np.sqrt(min_distances.max()) > close_thresh ):
 
-        distances = xform_magnitude_sq( inverse_xforms[cur_index] @ xforms, lever2 )
+        # mm1(inverse_xforms, cur_index, xforms, out)
+        # distances1 = xform_magnitude_sq( out, lever2 )
+        # distances = xform_magnitude_sq( inverse_xforms[cur_index] @ xforms, lever2 )
+
+        mm2(inverse_xforms[cur_index], xforms, traces, trans_err2)
+        distances = xform_magnitude_sq_fast( trans_err2, traces, lever2 )
+
+        # assert((np.abs(distances1 - distances) < 0.01).all())
 
         changes = distances < min_distances
         assignments[changes] = cur_index
@@ -1088,6 +1228,15 @@ def cluster_xforms( close_thresh, lever, xforms, inverse_xforms = None, info_eve
                 print("Cluster round %i: max_dist: %6.3f   %8i"%(len(center_indices), np.sqrt(min_distances[cur_index]), cur_index))
 
     return center_indices, assignments
+
+
+def slow_cluster_points(points, distance, info_every=None):
+
+    as_xforms = np.tile(np.identity(4), (len(points), 1, 1))
+    as_xforms[:,:3,3] = points[:,:3]
+
+    return cluster_xforms( distance, 3, as_xforms, info_every )
+
 
 
 def center_of_mass( coords ):
