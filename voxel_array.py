@@ -11,16 +11,39 @@ from numba import njit
 # OOB gets clipped to the edges. Be careful to leave them at 0
 class VoxelArray:
 
-    def __init__(self, lbs, ubs, cbs, dtype="f8"):
+    def __init__(self, lbs, ubs, cbs, dtype="f8", arr=None):
 
         self.dim = len(lbs)
         self.lb = lbs
         self.ub = ubs
         self.cs = cbs
 
-        extents = self.floats_to_indices_no_clip(np.array([self.ub]))[0]
-        extents += 1
-        self.arr = np.zeros(extents, dtype=dtype)
+        if ( arr is None ):
+            extents = self.floats_to_indices_no_clip(np.array([self.ub]))[0]
+            extents += 1
+            self.arr = np.zeros(extents, dtype=dtype)
+        else:
+            self.arr = arr
+
+    def save(self, fname):
+        save_dict = {
+            "lb":self.lb,
+            "ub":self.ub,
+            "cs":self.cs,
+            "arr":self.arr
+        }
+        np.save(fname, save_dict)
+
+    @classmethod
+    def load(cls, fname):
+        save_dict = np.load(fname, allow_pickle=True).item()
+        lb = save_dict["lb"]
+        ub = save_dict["ub"]
+        cs = save_dict["cs"]
+        arr = save_dict["arr"]
+
+        return cls(lb, ub, cs, arr=arr)
+
 
     # only used in __init__ 
     def floats_to_indices_no_clip(self, pts):
@@ -94,6 +117,39 @@ class VoxelArray:
 
 
 
+    def dump_mask_true(self, fname, mask, resname="VOX", atname="VOXL" ):
+
+        indices = np.array(list(np.where(mask))).T
+        centers = self.indices_to_centers(indices)
+
+        f = open(fname, "w")
+
+        anum = 1
+        rnum = 1
+
+        for ind, xyz in enumerate(centers):
+
+            f.write("%s%5i %4s %3s %s%4i    %8.3f%8.3f%8.3f%6.2f%6.2f %11s\n"%(
+                "HETATM",
+                anum,
+                atname,
+                resname,
+                "A",
+                rnum,
+                xyz[0],xyz[1],xyz[2],
+                1.0,
+                1.0,
+                "HB"
+                ))
+
+            anum += 1
+            rnum += 1
+            anum %= 100000
+            rnum %= 10000
+
+        f.close()
+
+
 
     def dump_grids_true(self, fname, func, resname="VOX", atname="VOXL", jitter=False):
         centers = self.all_centers()
@@ -152,6 +208,10 @@ class VoxelArray:
 
     def add_to_clashgrid(self, pts, atom_radius, store_val=True ):
         numba_make_clashgrid(pts, atom_radius, self.arr, self.lb, self.ub, self.cs, self.arr.shape, store_val)
+
+
+    def add_to_sum_grid(self, pts, atom_radius, store_val=1 ):
+        numba_make_sum_grid(pts, atom_radius, self.arr, self.lb, self.ub, self.cs, self.arr.shape, store_val)
 
 
     # fill the voxel array with ipt for all voxels closest to ipt.
@@ -286,6 +346,52 @@ def numba_store_near_grid(near_grid, dist_grid, _x, pt, idx, lb, ub, cs, shape):
                     if ( dist2 < dist_grid[i, j, k] ):
                         near_grid[i, j, k] = idx
                         dist_grid[i, j, k] = dist2
+
+
+@njit(fastmath=True)
+def numba_make_sum_grid(pts, atom_radius, arr, lb, ub, cs, shape, store_val):
+    for i in range(len(pts)):
+        pt = pts[i]
+        numba_indices_add_within_x_of(arr, store_val, atom_radius*2, pt, lb, ub, cs, shape)
+
+
+@njit(fastmath=True)
+def numba_indices_add_within_x_of(arr, to_store, _x, pt, lb, ub, cs, shape):
+
+    # these should like really be here
+    assert(len(pt) == 3)
+
+    low_high = np.array([[0, 0, 0], [0, 0, 0]], dtype=np.float_)
+    for i in range(3):
+        low_high[0, i] = pt[i] - _x
+        low_high[1, i] = pt[i] + _x
+
+    for i in range(3):
+        assert( low_high[0, i] > lb[i] + cs[i] )
+        assert( low_high[1, i] < ub[i] - cs[i] )
+
+    # transform bounds into upper and lower corners in voxel array indices
+    bounds = xform_vectors( low_high, lb, cs, shape )
+
+
+    # translate voxel array indices back to 3d coords and do distance check
+    _x2 = _x*_x
+     
+    for i in range(bounds[0, 0], bounds[1, 0] + 1):
+        x = numba_ind_index_to_center(i, lb[0], cs[0]) - pt[0]
+        x2 = x*x
+        for j in range(bounds[0, 1], bounds[1, 1] + 1):
+            y = numba_ind_index_to_center(j, lb[1], cs[1]) - pt[1]
+            y2 = y*y
+            for k in range(bounds[0, 2], bounds[1, 2] + 1):
+                z = numba_ind_index_to_center(k, lb[2], cs[2]) - pt[2]
+                z2 = z*z
+                if ( x2 + y2 + z2 < _x2 ):
+                    arr[i, j, k] += to_store
+
+
+
+
 
 @njit(fastmath=True)
 def numba_make_clashgrid(pts, atom_radius, arr, lb, ub, cs, shape, store_val):

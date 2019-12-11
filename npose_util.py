@@ -175,8 +175,8 @@ _null_line_size = len(_null_line)
 #  Line doesn't start with atom
 #  Line isn't long enough
 #  Res/resnum/chain changes
-@njit(fastmath=True)
-def read_npose_from_data( data, null_line_atom_names, scratch_residues):
+@njit(fastmath=True, cache=True)
+def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues, scratch_chains):
 
 
     _null_line = null_line_atom_names[:_null_line_size]
@@ -185,6 +185,12 @@ def read_npose_from_data( data, null_line_atom_names, scratch_residues):
     _CB = _null_line[4:6]
     _atom = _null_line[:4]
     _empty_bytes = _null_line[:0]
+
+    N = NCACCBR[0]
+    CA = NCACCBR[1]
+    C = NCACCBR[2]
+    CB = NCACCBR[3]
+    R = NCACCBR[4]
 
     byte_atom_names = []
     for i in range(len(array_byte_atom_names)//4):
@@ -252,11 +258,19 @@ def read_npose_from_data( data, null_line_atom_names, scratch_residues):
                         new_scratch[i] = scratch_residues[i]
                     scratch_residues = new_scratch
 
+                    new_scratch2 = np.zeros((old_size*2), np.byte)
+                    for i in range(old_size):
+                        new_scratch2[i] = scratch_chains[i]
+                    scratch_chains = new_scratch2
+
+
                 scratch_residues[seqpos].fill(0)
 
             res_ident = ident
             res_has_n_atoms = 0
             next_res = False
+
+        scratch_chains[seqpos] = line[21]
 
         # avoid parsing stuff we know we don't need
         if ( res_has_n_atoms == R ):
@@ -289,10 +303,11 @@ def read_npose_from_data( data, null_line_atom_names, scratch_residues):
     for i in range(seqpos):
         to_ret[i] = scratch_residues[i]
     
-    return to_ret.reshape(-1, 4), scratch_residues
+    return to_ret.reshape(-1, 4), scratch_residues, scratch_chains
 
 
 g_scratch_residues = np.zeros((1000,R,4), np.float32)
+g_scratch_chains = np.zeros((1000), np.byte)
 # for i in range(1000):
 #     g_scratch_residues.append(np.zeros((R,4), np.float32))
 
@@ -305,16 +320,33 @@ _array_atom_names = "".join(_array_byte_atom_names)
 
 _null_line_atom_names = (_null_line + _array_atom_names).encode()
 
-def npose_from_file_fast(fname):
+NCACCBR = np.zeros(5, np.int64)
+if ( "N" in locals() ):
+    NCACCBR[0] = N
+if ( "CA" in locals() ):
+    NCACCBR[1] = CA
+if ( "C" in locals() ):
+    NCACCBR[2] = C
+if ( "CB" in locals() ):
+    NCACCBR[3] = CB
+NCACCBR[4] = R
+
+def npose_from_file_fast(fname, chains=False):
     with gzopen(fname, "rb") as f:
         data = f.read()
 
     global g_scratch_residues
+    global g_scratch_chains
 
-    npose, scratch = read_npose_from_data( data, _null_line_atom_names,  g_scratch_residues)
+    npose, scratch, scratch_chains = read_npose_from_data( data, _null_line_atom_names, NCACCBR, g_scratch_residues, g_scratch_chains)
+    npose = npose.astype(np.float32) # get rid of random numba noise
 
     g_scratch_residues = scratch
-    return npose.astype(np.float32) # get rid of random numba noise
+    g_scratch_chains = scratch_chains
+    if ( not chains ):
+        return npose 
+    else:
+        return npose, bytes(scratch_chains[:nsize(npose)]).decode("ascii")
 
 def readpdb(fname):
     n = 'het ai an rn ch ri x y z occ bfac elem'.split()
@@ -1217,7 +1249,7 @@ def cluster_xforms( close_thresh, lever, xforms, inverse_xforms = None, info_eve
         # assert((np.abs(distances1 - distances) < 0.01).all())
 
         changes = distances < min_distances
-        assignments[changes] = cur_index
+        assignments[changes] = len( center_indices )
         min_distances[changes] = distances[changes]
 
         center_indices.append( cur_index )
@@ -1225,7 +1257,7 @@ def cluster_xforms( close_thresh, lever, xforms, inverse_xforms = None, info_eve
 
         if ( not info_every is None ):
             if ( len(center_indices) % info_every == 0 ):
-                print("Cluster round %i: max_dist: %6.3f   %8i"%(len(center_indices), np.sqrt(min_distances[cur_index]), cur_index))
+                print("Cluster round %i: max_dist: %6.3f  "%(len(center_indices), np.sqrt(min_distances[cur_index])))
 
     return center_indices, assignments
 
@@ -1237,6 +1269,16 @@ def slow_cluster_points(points, distance, info_every=None):
 
     return cluster_xforms( distance, 3, as_xforms, info_every )
 
+
+def get_clusters(assignments, num_clusters):
+    clusters = []
+    for i in range(num_clusters):
+        clusters.append([])
+    
+    for i in range(len(assignments)):
+        clusters[assignments[i]].append(i)
+
+    return clusters
 
 
 def center_of_mass( coords ):
@@ -1260,5 +1302,73 @@ def xform_from_flat( twelve ):
 
 def flat_from_xform( xform ):
     return list(xform[:3,:3].flat) + list(xform[:3,3].flat)
+
+
+# assumes flat12 format
+def load_xforms(file):
+    xforms = []
+    with open(file) as f:
+        for line in f:
+            line = line.strip()
+            sp = line.split()
+            flat = [float(x) for x in sp]
+            xform = xform_from_flat(flat)
+            xforms.append(xform)
+    return np.array(xforms)
+
+
+def skew(rots):
+    return 1/2 * ( rots - np.transpose( rots, axes=[0, 2, 1] ) )
+
+def cay(rots):
+    idents = np.tile(np.identity(3), (len(rots), 1, 1))
+
+    return np.linalg.inv( idents + rots ) @ ( idents - rots )
+
+def get_normed_rotations(rots):
+
+    return cay(skew(cay(rots)))
+
+    # return cay( ( np.transpose( rots, axes=[0, 2, 1] ) - rots ) / ( 1 + np.trace( rots, axis1=-1, axis2=-2 ) )[:,None,None])
+
+def _F(width, max_decimals, x):
+    try:
+        whole_size = int(np.log10(x)) + 1
+        if ( whole_size + 2 > width ):
+            fmt = "%i"
+        else:
+            decimals = width - whole_size - 1
+            fmt = "%%.%if"%(decimals)
+        return fmt%x
+    except:
+        return str(x) # nan and stuff
+
+
+def KMGT(x, w=3, d=1):
+    if( x < 1e3  ): return _F( w, d, x/1e0  );
+    if( x < 1e6  ): return _F( w, d, x/1e3  )+"K";
+    if( x < 1e9  ): return _F( w, d, x/1e6  )+"M";
+    if( x < 1e12 ): return _F( w, d, x/1e9  )+"G";
+    if( x < 1e15 ): return _F( w, d, x/1e12 )+"T";
+    if( x < 1e18 ): return _F( w, d, x/1e15 )+"P";
+    if( x < 1e21 ): return _F( w, d, x/1e18 )+"E";
+    if( x < 1e24 ): return _F( w, d, x/1e21 )+"Z";
+    else:           return _F( w, d, x/1e24 )+"Y";
+
+
+def linear_regression( x, y ):
+
+    x_mean = np.mean(x)
+    y_mean = np.mean(y)
+
+    dx = x - x_mean
+    dy = y - y_mean
+
+    slope = np.sum( dx*dy ) / np.sum( np.square(dx) )
+    intercept = y_mean - slope * x_mean
+
+    return slope, intercept
+
+
 
 
