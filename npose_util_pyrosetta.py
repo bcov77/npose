@@ -3,6 +3,7 @@
 import os
 import sys
 import math
+import struct
 
 from npose_util import *
 
@@ -112,6 +113,20 @@ def get_atoms_and_radii(pose, subset=None):
     return np.array(atoms), np.array(radii)
 
 
+def get_pose_cas(pose, subset=None):
+    cas = []
+
+    for seqpos in range(1, pose.size()+1):
+        if ( not subset is None ):
+            if ( not subset[seqpos] ):
+                continue
+        res = pose.residue(seqpos)
+
+        cas.append(from_vector(res.xyz("CA")))
+
+    return np.array(cas)
+
+
 
 
 def get_sasa_surface(pose, probe_size=2.2, resl=0.5):
@@ -147,6 +162,15 @@ def get_sasa_surface(pose, probe_size=2.2, resl=0.5):
 
 
     return verts, vert_normals, face_centers, face_normals, face_areas
+
+
+
+
+
+
+
+
+
 
 
 

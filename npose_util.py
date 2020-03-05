@@ -10,6 +10,10 @@ import pandas as pd
 import numpy as np
 import warnings
 import gzip
+import struct
+import itertools
+
+from collections import OrderedDict
 
 try:
     from numba import njit
@@ -18,6 +22,9 @@ try:
 except:
     sys.path.append("/home/bcov/sc/random/just_numba")
     from numba import njit
+
+# silent tools is conditionally imported when needed
+sys.path.append("/home/bcov/silent_tools")
 
 # Useful numbers
 # N [-1.45837285,  0 , 0]
@@ -538,6 +545,59 @@ def npose_from_file(fname):
 
     return npose
 
+def build_CB(tpose):
+    CB_pos = np.array([0.52892494, -0.77445692, -1.19923854, 1.0], dtype=np.float)
+    return tpose @ CB_pos
+
+def build_H(npose):
+    ncac = extract_atoms(npose, [N, CA, C])
+
+    # we have freedom on where to build the first H
+    # we access the freedom by deciding where to build the first C
+    # it has to be 120 degrees accross from N-CA
+
+    first_CA_to_N = ncac[0,:3] - ncac[1,:3]
+    first_CA_to_N /= np.linalg.norm(first_CA_to_N)
+
+    perp = np.cross( first_CA_to_N, np.array([1, 0, 0] ) )
+    if ( np.linalg.norm(perp) == 0 ):
+        perp = np.cross( first_CA_to_N, np.array([0, 1, 0] ) )
+    perp /= np.linalg.norm(perp)
+
+    C_sin_vect = np.cross(first_CA_to_N, perp)
+    C_sin_vect /= np.linalg.norm(C_sin_vect)
+
+    #                                    -cos(120)                      sin(120) 
+    to_first_c = first_CA_to_N * 0.4999999999999998 + C_sin_vect * 0.8660254037844387
+
+    first_c = ncac[0].copy()
+    first_c[:3] += to_first_c
+
+    # assert( np.abs(np.dot( to_first_c, -first_CA_to_N ) - np.cos(np.radians(120))) < 0.01 )
+
+    cnca = np.r_[ first_c[None,:], ncac[:-1] ].reshape(-1, 3, 4)[...,:3]
+
+    to_c_unit = cnca[:,0] - cnca[:,1]
+    to_c_unit /= np.linalg.norm(to_c_unit, axis=-1)[...,None]
+
+    to_ca_unit = cnca[:,2] - cnca[:,1]
+    to_ca_unit /= np.linalg.norm(to_ca_unit, axis=-1)[...,None]
+
+
+    to_anti_h = to_c_unit + to_ca_unit
+    to_anti_h /= np.linalg.norm(to_anti_h, axis=-1)[...,None]
+
+    # to_anti_h = anti_h - cnca[:,1]
+    # to_anti_h /= np.linalg.norm(to_anti_h, axis=-1)[...,None]
+
+    h_bond_length = 1.01
+
+    H_coord = cnca[:,1] - h_bond_length * to_anti_h
+
+    return H_coord
+
+
+
 def nsize(npose):
     return int(len(npose)/R)
 
@@ -626,29 +686,36 @@ def format_atom(
     return _atom_record_format.format(**locals())
 
 
-def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order):
+def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order, out_file=None):
     assert(len(atoms_present) == len(pdb_order))
     local_R = len(atoms_present)
-    with open(fname, 'w') as out:
-        for ri, res in enumerate(npose.reshape(-1, local_R, 4)):
-            atom_offset = ri*local_R+1
-            for i, atomi in enumerate(pdb_order):
-                a = res[atoms_present.index(atomi)]
-                out.write( format_atom(
-                    atomi=(atom_offset+i)%100000,
-                    resn='ALA',
-                    resi=(ri+1)%10000,
-                    atomn=_atom_names[atomi],
-                    x=a[0],
-                    y=a[1],
-                    z=a[2],
-                    ))
+    out = out_file
+    if ( out_file is None ):
+        out = open(fname, "w")
+    for ri, res in enumerate(npose.reshape(-1, local_R, 4)):
+        atom_offset = ri*local_R+1
+        for i, atomi in enumerate(pdb_order):
+            a = res[atoms_present.index(atomi)]
+            out.write( format_atom(
+                atomi=(atom_offset+i)%100000,
+                resn='ALA',
+                resi=(ri+1)%10000,
+                atomn=_atom_names[atomi],
+                x=a[0],
+                y=a[1],
+                z=a[2],
+                ))
+    if ( out_file is None ):
+        out.close()
 
 
 def dump_pts(pts, name):
     with open(name, "w") as f:
         for ivert, vert in enumerate(pts):
             f.write(format_atom(ivert%100000, resi=ivert%10000, x=vert[0], y=vert[1], z=vert[2]))
+
+def dump_line(start, direction, length, name):
+    dump_lines([start], [direction], length, name)
 
 def dump_lines(starts, directions, length, name):
 
@@ -658,7 +725,7 @@ def dump_lines(starts, directions, length, name):
 
     directions = np.array(directions)
 
-    vec = np.linspace(0, length, 20)
+    vec = np.linspace(0, length, 80)
 
     pt_collections = []
 
@@ -672,6 +739,120 @@ def dump_lines(starts, directions, length, name):
     pts = np.concatenate(pt_collections)
 
     dump_pts(pts, name)
+
+def dump_lines_clustered(starts, directions, length, name, cluster_resl):
+    centers, _ = slow_cluster_points(starts, cluster_resl)
+
+    dump_lines(starts[centers], directions[centers], length, name)
+
+def get_final_dict(score_dict, string_dict):
+    final_dict = OrderedDict()
+    keys_score = [] if score_dict is None else list(score_dict)
+    keys_string = [] if string_dict is None else list(string_dict)
+
+    all_keys = keys_score + keys_string
+
+    argsort = sorted(range(len(all_keys)), key=lambda x: all_keys[x])
+
+    for idx in argsort:
+        key = all_keys[idx]
+
+        if ( idx < len(keys_score) ):
+            final_dict[key] = "%8.3f"%(score_dict[key])
+        else:
+            final_dict[key] = string_dict[key]
+
+    return final_dict
+
+
+def add_to_score_file(tag, fname, write_header=False, score_dict=None, string_dict=None):
+    with open(fname, "a") as f:
+        add_to_score_file_open(tag, f, write_header, score_dict, string_dict)
+
+def add_to_score_file_open(tag, f, write_header=False, score_dict=None, string_dict=None):
+    final_dict = get_final_dict( score_dict, string_dict )
+    if ( write_header ):
+        f.write("SCORE:     %s description\n"%(" ".join(final_dict.keys())))
+    scores_string = " ".join(final_dict.values())
+    f.write("SCORE:     %s        %s\n"%(scores_string, tag))
+
+
+def add_to_silent(npose, tag, fname, write_header=False, score_dict=None, string_dict=None):
+    with open(fname, "a") as f:
+        add_to_silent_file_open(npose, tag, f, write_header, score_dict, string_dict)
+
+def add_to_silent_file_open(npose, tag, f, write_header=False, score_dict=None):
+    final_dict = get_final_dict( score_dict, string_dict )
+    if ( write_header ):
+        f.write("SEQUENCE: A\n")
+        f.write("SCORE:     score %s description\n"%(" ".join(final_dict.keys())))
+
+    scores_string = " ".join(final_dict.values())
+    f.write("SCORE:     0.000 %s        %s\n"%(scores_string, tag))
+    f.write("ANNOTATED_SEQUENCE: %s %s\n"%("A"*nsize(npose), tag))
+
+    Hs = build_H(npose)
+
+    by_res = npose.reshape(-1, R, 4)
+
+    for i in range(len(by_res)):
+        res_data = get_silent_res_data(np.r_[
+            by_res[i,N,:3],
+            by_res[i,CA,:3],
+            by_res[i,C,:3],
+            by_res[i,O,:3],
+            by_res[i,CB,:3],
+            by_res[i,CB,:3],
+            Hs[i], 
+         ])
+        f.write("%s %s\n"%(res_data, tag))
+
+
+chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+@njit(fastmath=True, cache=True)
+def code_to_6bit(byte):
+    return chars[byte]
+
+@njit(fastmath=True, cache=True)
+def encode_24_to_32(i0, i1, i2):
+    return code_to_6bit( i0 & 63 ) + \
+            code_to_6bit( ((i1 << 2) | (i0 >> 6)) & 63 ) + \
+            code_to_6bit( ((i1 >> 4) | ((i2 << 4) & 63)) & 63 ) + \
+            code_to_6bit( i2 >> 2 )
+
+
+float_packer = struct.Struct("f")
+def get_silent_res_data(coords):
+
+    ba = bytearray()
+
+    for coord in coords:
+        ba += float_packer.pack(coord)
+
+    return inner_get_silent_res_data(ba)
+
+@njit(fastmath=True, cache=True)
+def inner_get_silent_res_data(ba):
+    line = "L"
+
+    iters = int(math.ceil(len(ba) / 3))
+
+    len_ba = len(ba)
+    for i in range(iters):
+        i0 = 0
+        i1 = 0
+        i2 = 0
+        i0 = ba[i*3+0]
+        if ( i*3 + 1 < len_ba ):
+            i1 = ba[i*3+1]
+        if ( i*3+2 < len_ba ):
+            i2 = ba[i*3+2]
+
+        line += encode_24_to_32(i0, i1, i2)
+
+    return line
+
 
 
 
@@ -710,7 +891,7 @@ def points_from_tpose(tpose):
 
 def calc_rmsd(npose1, npose2):
     assert( len(npose1) == len(npose2))
-    return math.sqrt(np.sum(np.square(np.linalg.norm(npose1[:,:-3] - npose2[:,:-3], axis=0))) / ( len(npose1) ))
+    return math.sqrt(np.sum(np.square(np.linalg.norm(npose1[:,:3] - npose2[:,:3], axis=-1))) / ( len(npose1) ))
 
 def tpose_from_npose( npose ):
     return get_stubs_from_npose( npose )
@@ -736,17 +917,17 @@ def get_tag(fname):
 #Bounds are lb, ub, resl
 
 #num_clashes = clash_grid.arr[tuple(clash_grid.floats_to_indices(xformed_cas).T)].sum()
-def ca_clashgrid_from_npose(npose, atom_size, resl):
-    return clashgrid_from_points( extract_CA(npose), atom_size, resl)
+def ca_clashgrid_from_npose(npose, atom_size, resl, padding=0):
+    return clashgrid_from_points( extract_CA(npose), atom_size, resl, padding)
 
 #Bounds are lb, ub, resl
-def clashgrid_from_tpose(tpose, atom_size, resl):
-    return clashgrid_from_points( points_from_tpose(tpose), atom_size, resl)
+def clashgrid_from_tpose(tpose, atom_size, resl, padding=0):
+    return clashgrid_from_points( points_from_tpose(tpose), atom_size, resl, padding)
 
-def clashgrid_from_points(points, atom_size, resl):
+def clashgrid_from_points(points, atom_size, resl, padding=0):
     points = points[:,:3]
-    low = np.min(points, axis=0) - atom_size*2 - resl*2
-    high = np.max(points, axis=0) + atom_size*2 + resl*2
+    low = np.min(points, axis=0) - atom_size*2 - resl*2 - padding*2
+    high = np.max(points, axis=0) + atom_size*2 + resl*2 + padding*2
 
     clashgrid = voxel_array.VoxelArray(low, high, np.array([resl]*3), bool)
 
@@ -820,6 +1001,54 @@ def npose_to_motif_hash_frames(npose):
 
     return xforms_from_four_points(cen, cen2, CAs, CAs+dir1)
 
+def npose_to_will_hash_frames(npose):
+    by_res = npose.reshape(-1, R, 4)
+
+
+    Ns = by_res[:,N]
+    CAs = by_res[:,CA]
+    Cs = by_res[:,C]
+
+
+    frames = xforms_from_four_points(CAs, Ns, CAs, Cs)
+
+    avg_centroid_offset = [-0.80571551, -1.60735769, 1.46276045]
+
+    t = frames[:,:3,:3] @ avg_centroid_offset + CAs[:, :3]
+
+    frames[:,:3,3] = t
+
+    return frames
+
+
+def npose_to_derp_hash_frames(npose):
+    by_res = npose.reshape(-1, R, 4)
+
+
+    Ns = by_res[:,N,:3]
+    CAs = by_res[:,CA,:3]
+    Cs = by_res[:,C,:3]
+
+    ca2n = Ns - CAs
+    ca2c = Cs - CAs
+
+    tgt1 = ca2n
+    tgt2 = ca2c
+
+    a = tgt1
+    a /= np.linalg.norm(a, axis=-1)[:, None]
+    c = np.cross(a, tgt2)
+    c /= np.linalg.norm(c, axis=-1)[:, None]
+    b = np.cross(c, a)
+
+    stubs = np.zeros((len(by_res), 4, 4))
+    stubs[:, :3, 0] = a
+    stubs[:, :3, 1] = b
+    stubs[:, :3, 2] = c
+    stubs[:, :3, 3] = CAs
+    stubs[:, 3, 3] = 1
+
+    return stubs
 
 def pair_xform(xform1, xform2):
     return np.linalg.inv(xform1) @ xform2
@@ -1042,36 +1271,62 @@ def get_dihedral(atom1, atom2, atom3, atom4):
 
     return angle
 
+def get_dihedrals(atom1, atom2, atom3, atom4):
+
+    a = atom2 - atom1
+    a /= np.linalg.norm(a, axis=-1)[:,None]
+    b = atom3 - atom2
+    b /= np.linalg.norm(b, axis=-1)[:,None]
+    c = atom4 - atom3
+    c /= np.linalg.norm(c, axis=-1)[:,None]
+
+    x = -dot( a, c ) + ( dot( a, b ) * dot( b, c) )
+    y = dot( a, np.cross( b, c ) )
+
+    return np.arctan2( y, x )
+
 
 def get_npose_phis(npose):
-    phis = []
-    phis.append(0)
+    npose_by_res = npose.reshape(-1,R,4)
 
-    for i in range(1, nsize(npose)):
-        offset = i * R
-        phis.append(180/math.pi * get_dihedral( npose[offset-R+C,:3], 
-                                                npose[offset+N,:3],
-                                                npose[offset+CA,:3],
-                                                npose[offset+C,:3] 
-                                               ))
+    phis = np.zeros(len(npose_by_res))
 
-    return np.array(phis)
+    phis[1:] = np.degrees( get_dihedrals( npose_by_res[:-1,C,:3],
+                                          npose_by_res[1:,N,:3],
+                                          npose_by_res[1:,CA,:3],
+                                          npose_by_res[1:,C,:3]
+                                          ))
+    return phis
+
 
 def get_npose_psis(npose):
-    psis = []
+    npose_by_res = npose.reshape(-1,R,4)
 
-    for i in range(nsize(npose) - 1):
-        offset = i * R
-        psis.append(180/math.pi * get_dihedral( npose[offset-N,:3], 
-                                                npose[offset+CA,:3],
-                                                npose[offset+C,:3],
-                                                npose[offset+R+N,:3] 
-                                               ))
+    psis = np.zeros(len(npose_by_res))
 
-    psis.append(0)
-    return np.array(psis)
+    psis[:-1] = np.degrees( get_dihedrals( npose_by_res[:-1,N,:3],
+                                          npose_by_res[:-1,CA,:3],
+                                          npose_by_res[:-1,C,:3],
+                                          npose_by_res[1:,N,:3]
+                                          ))
+    return psis
 
 
+def npose_abego(npose):
+    phis = get_npose_phis(npose)
+    psis = get_npose_psis(npose)
+
+    abegos = np.zeros(len(phis), 'U1')
+
+    abegos[ ( phis < 0 ) &  (( -75 <= psis ) & ( psis < 50 )) ] = "A"
+    abegos[ ( phis < 0 ) & ~(( -75 <= psis ) & ( psis < 50 )) ] = "B"
+
+    abegos[ ( phis >= 0 ) & ~(( -100 <= psis ) & ( psis < 100 )) ] = "E"
+    abegos[ ( phis >= 0 ) &  (( -100 <= psis ) & ( psis < 100 )) ] = "G"
+
+    # we don't do O
+
+    return abegos
 
 
 
@@ -1261,13 +1516,45 @@ def cluster_xforms( close_thresh, lever, xforms, inverse_xforms = None, info_eve
 
     return center_indices, assignments
 
-
 def slow_cluster_points(points, distance, info_every=None):
 
     as_xforms = np.tile(np.identity(4), (len(points), 1, 1))
     as_xforms[:,:3,3] = points[:,:3]
 
     return cluster_xforms( distance, 3, as_xforms, info_every )
+
+
+# This would be better if it found the center of each cluster
+# This requires nxn of each cluster though
+@njit(fastmath=True, cache=True)
+def cluster_points( points, close_thresh ):
+
+    size = len(points)
+    min_distances = np.zeros(size, np.float_)
+    min_distances.fill(9e9)
+    assignments = np.zeros(size, np.int_)
+    center_indices = []
+
+    cur_index = 0
+
+    # trans_err2 = np.zeros(len(points), dtype=np.float32)
+
+    while ( np.sqrt(min_distances.max()) > close_thresh ):
+
+        distances = np.sum( np.square( points - points[cur_index] ), axis=-1 )
+
+        changes = distances < min_distances
+        assignments[changes] = len( center_indices )
+        min_distances[changes] = distances[changes]
+
+        center_indices.append( cur_index )
+        cur_index = min_distances.argmax()
+
+        # if ( not info_every is None ):
+        #     if ( len(center_indices) % info_every == 0 ):
+        #         print("Cluster round %i: max_dist: %6.3f  "%(len(center_indices), np.sqrt(min_distances[cur_index])))
+
+    return center_indices, assignments
 
 
 def get_clusters(assignments, num_clusters):
@@ -1368,6 +1655,180 @@ def linear_regression( x, y ):
     intercept = y_mean - slope * x_mean
 
     return slope, intercept
+
+@njit(fastmath=True, cache=True)
+def _fill_in_gaps(array):
+    for i in range(1, len(array)-1):
+        if ( array[i-1] == array[i+1] ):
+            if ( array[i] != array[i-1] ):
+                array[i] = array[i-1]
+        if ( i < len(array) - 3 ):
+            if ( array[i-1] == array[i+2] ):
+                if ( array[i] != array[i-1] ):
+                    array[i] = array[i-1]
+
+# currently only supports loops and helices
+def npose_dssp_helix(npose, hbond_cutoff=-0.1):
+
+    Hs = build_H( npose )[:,:3]
+    Ns = extract_atoms( npose, [N])[:,:3]
+    Cs = extract_atoms( npose, [C])[:,:3]
+    Os = extract_atoms( npose, [O])[:,:3]
+
+    don_rays = Hs - Ns
+    don_rays /= np.linalg.norm( don_rays, axis=-1 )[:,None]
+
+    acc_rays = Os - Cs
+    acc_rays /= np.linalg.norm( acc_rays, axis=-1 )[:,None]
+
+    hbond_i_ip4 = fast_hbond( Hs[4:], don_rays[4:], Os[:-4], acc_rays[:-4], 0.5 ) < hbond_cutoff
+
+    # is_hbond = hbond_i_ip4 < -0.2
+
+    abegos = npose_abego(npose)
+
+
+    is_forward = np.zeros(nsize(npose), np.bool)
+    is_backward = np.zeros(nsize(npose), np.bool)
+
+    temp = np.zeros(nsize(npose), np.bool)
+
+    is_helix = np.zeros(nsize(npose), np.bool)
+
+    is_forward[:-4] = hbond_i_ip4 & ( abegos[:-4] == 'A' )
+    is_backward[4:] = hbond_i_ip4 & ( abegos[4:] == 'A' )
+
+    _fill_in_gaps( is_forward )
+    _fill_in_gaps( is_backward )
+
+    state = -1
+    for i in range(1, len(is_helix)):
+        # before helix
+        if ( state == -1 ):
+            if ( is_forward[i] ):
+                state = 0
+                is_helix[i] = True
+        elif ( state == 0 ):
+            if ( not is_forward[i] ):
+                state = 1
+            else:
+                is_helix[i] = True
+            if ( is_backward[i] ):
+                is_helix[i] = True
+        else:
+            if ( is_backward[i] and not is_forward[i] ):
+                is_helix[i] = True
+            else:
+                state = -1
+
+
+    n_consensus = is_helix[3:6].mean() > 0.5
+    c_consensus = is_helix[-6:-3].mean() > 0.5
+
+    is_helix[:6] = n_consensus
+    is_helix[-6:] = c_consensus
+
+    return is_helix
+
+
+def dot(a, b):
+    return np.einsum('ij,ij->i', a, b)
+
+def fast_hbond(donor_hs, donor_rays, acceptors, acceptor_rays, extra_length=0):
+
+    h_to_a = acceptors - donor_hs
+
+    # dump_lines(donor_hs, h_to_a, 1, "test.pdb")
+
+    h_to_a_len = np.linalg.norm( h_to_a, axis=-1 )
+    h_to_a /= h_to_a_len[:,None]
+
+    h_dirscore = dot( donor_rays, h_to_a ).clip(0, 1)
+
+    a_dirscore = (dot( acceptor_rays, h_to_a ) * -1).clip( 0, 1 )
+
+    diff = h_to_a_len - 2.00
+
+    # if diff < 0:
+    #     diff *= 1.5
+    diff += ( diff * 0.5 ).clip(None, 0)
+
+    # if diff > 0:
+    #     diff = ( diff - extra_length ).clip(0, None)
+
+    temp = (diff - extra_length).clip(0, None)
+    diff = np.minimum( diff, temp )
+
+    # diff -= (diff - extra_length).clip(0, None)
+
+    max_diff = 0.8
+
+    score = np.square( 1 - np.square( diff / max_diff ).clip(None, 1) ) * -1
+
+    dirscore = h_dirscore * h_dirscore * a_dirscore
+
+    return score * dirscore
+
+
+def npose_helix_elements(is_helix):
+    ss_elements = []
+
+    offset = 0
+    ilabel = -1
+    for label, group in itertools.groupby(is_helix):
+        ilabel += 1
+        this_len = sum(1 for _ in group)
+        next_offset = offset + this_len
+
+        ss_elements.append( (label, offset, next_offset-1))
+
+        offset = next_offset
+    return ss_elements
+
+
+def nposes_from_silent(fname):
+    import silent_tools
+
+    silent_index = silent_tools.get_silent_index( fname )
+
+    tags = silent_index['tags']
+
+    nposes = []
+
+
+    with open(fname) as sf:
+        for tag in tags:
+            assert( tag in silent_index['index'] )
+            structure = silent_tools.get_silent_structure_file_open( sf, silent_index, tag )
+
+            ncaco = silent_tools.sketch_get_atoms(structure, [0, 1, 2, 3], [0]).reshape(-1, 4, 3)
+
+            npose_by_res = np.zeros((len(ncaco), R, 4), np.float)
+
+            for atom in ATOM_NAMES:
+                if ( atom == "CB" ):
+                    tpose = get_stubs_from_n_ca_c(ncaco[:,0], ncaco[:,1], ncaco[:,2])
+                    cbs = build_CB(tpose)
+                    npose_by_res[:,CB,:3] = cbs[:,:3]
+                elif ( atom == "N" ):
+                    npose_by_res[:,N,:3] = ncaco[:,0]
+                elif ( atom == "CA" ):
+                    npose_by_res[:,CA,:3] = ncaco[:,1]
+                elif ( atom == "C" ):
+                    npose_by_res[:,C,:3] = ncaco[:,2]
+                elif ( atom == "O" ):
+                    npose_by_res[:,O,:3] = ncaco[:,3]
+
+            npose = npose_by_res.reshape(-1, 4)
+
+            nposes.append(npose)
+
+    return nposes, tags
+
+
+
+
+
 
 
 

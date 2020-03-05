@@ -117,10 +117,16 @@ class VoxelArray:
 
 
 
-    def dump_mask_true(self, fname, mask, resname="VOX", atname="VOXL" ):
+    def dump_mask_true(self, fname, mask, resname="VOX", atname="VOXL", z=None ):
 
         indices = np.array(list(np.where(mask))).T
         centers = self.indices_to_centers(indices)
+
+        if ( self.dim == 2 ):
+            centers_ = np.zeros((len(centers), 3), np.float)
+            centers_[:,:2] = centers
+            centers_[:,2] = z
+            centers = centers_
 
         f = open(fname, "w")
 
@@ -151,9 +157,15 @@ class VoxelArray:
 
 
 
-    def dump_grids_true(self, fname, func, resname="VOX", atname="VOXL", jitter=False):
+    def dump_grids_true(self, fname, func, resname="VOX", atname="VOXL", jitter=False, z=None):
         centers = self.all_centers()
         vals = self.arr[tuple(self.floats_to_indices(centers).T)]
+
+        if ( self.dim == 2 ):
+            centers_ = np.zeros((len(centers), 3), np.float)
+            centers_[:,:2] = centers
+            centers_[:,2] = z
+            centers = centers_
 
         f = open(fname, "w")
 
@@ -231,7 +243,11 @@ class VoxelArray:
         return numba_do_surface_crawl(start, normal, direction, distance, self.arr, self.lb, self.ub, self.cs, self.arr.shape)
 
     def flood_fill(self, fill_val, overwrite_val):
-        return numba_flood_fill(fill_val, overwrite_val, self.arr, self.lb, self.ub, self.cs, self.arr.shape )
+        if ( self.dim == 2 ):
+            return numba_flood_fill_2d(fill_val, overwrite_val, self.arr, self.lb, self.ub, self.cs, self.arr.shape )
+        if ( self.dim == 3 ):
+            return numba_flood_fill_3d(fill_val, overwrite_val, self.arr, self.lb, self.ub, self.cs, self.arr.shape )
+        assert(False)
 
 
 @njit(fastmath=True)
@@ -549,7 +565,7 @@ def numba_ray_trace(start, end, max_clashes, arr, lb, cs):
 # is this a fast way to do it? no idea
 # don't allow diagonal filling for speed
 @njit(fastmath=True)
-def numba_flood_fill(fill_val, overwrite_val, arr, lb, ub, cs, shape ):
+def numba_flood_fill_3d(fill_val, overwrite_val, arr, lb, ub, cs, shape ):
 
     # for cache-coherence, we always iter on z last
     any_changed = True
@@ -587,6 +603,45 @@ def numba_flood_fill(fill_val, overwrite_val, arr, lb, ub, cs, shape ):
                     if ( arr[x-1, y, z] == overwrite_val ):
                         arr[x-1, y, z] = fill_val
                         any_changed = True
+
+
+
+
+# this does forward filling going from 0->hi and hi->0
+# is this a fast way to do it? no idea
+# don't allow diagonal filling for speed
+@njit(fastmath=True)
+def numba_flood_fill_2d(fill_val, overwrite_val, arr, lb, ub, cs, shape  ):
+
+    # for cache-coherence, we always iter on z last
+    any_changed = True
+    while (any_changed):
+        any_changed = False
+
+        # forward fill in positive direction
+        for x in range(1, shape[0]-2):
+            for y in range(1, shape[1]-2):
+                if ( arr[x, y] != fill_val ):
+                    continue
+                if ( arr[x, y+1] == overwrite_val ):
+                    arr[x, y+1] = fill_val
+                    any_changed = True
+                if ( arr[x+1, y] == overwrite_val ):
+                    arr[x+1, y] = fill_val
+                    any_changed = True
+
+        # forward fill in negative direction
+        for x in range(shape[0]-2, 1, -1):
+            for y in range(shape[1]-2, 1, -1):
+                if ( arr[x, y] != fill_val ):
+                    continue
+                if ( arr[x, y-1] == overwrite_val ):
+                    arr[x, y-1] = fill_val
+                    any_changed = True
+                if ( arr[x-1, y] == overwrite_val ):
+                    arr[x-1, y] = fill_val
+                    any_changed = True
+
 
 
 
