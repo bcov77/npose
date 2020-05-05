@@ -25,6 +25,10 @@ class VoxelArray:
         else:
             self.arr = arr
 
+    def copy(self):
+        vx = VoxelArray(self.lb, self.ub, self.cs, self.arr.dtype, self.arr.copy())
+        return vx
+
     def save(self, fname):
         save_dict = {
             "lb":self.lb,
@@ -208,15 +212,15 @@ class VoxelArray:
 
         return numba_clash_check(pts, max_clashes, self.arr, self.lb, self.cs)
 
-    def ray_trace(self, start, end, max_clashes):
+    def ray_trace(self, start, end, max_clashes, debug=False):
         assert(self.dim == 3)
 
-        return numba_ray_trace(start, end, max_clashes, self.arr, self.lb, self.cs)
+        return numba_ray_trace(start, end, max_clashes, self.arr, self.lb, self.cs, debug)
 
-    def ray_trace_many(self, starts, ends, max_clashes):
+    def ray_trace_many(self, starts, ends, max_clashes, debug=False):
         assert(self.dim == 3)
 
-        return numba_ray_trace_many(starts, ends, max_clashes, self.arr, self.lb, self.cs)
+        return numba_ray_trace_many(starts, ends, max_clashes, self.arr, self.lb, self.cs, debug)
 
     def add_to_clashgrid(self, pts, atom_radius, store_val=True ):
         numba_make_clashgrid(pts, atom_radius, self.arr, self.lb, self.ub, self.cs, self.arr.shape, store_val)
@@ -516,17 +520,17 @@ def numba_clash_check(pts, max_clashes, arr, lb, cs):
 
 
 @njit(fastmath=True)
-def numba_ray_trace_many(starts, ends, max_clashes, arr, lb, cs):
+def numba_ray_trace_many(starts, ends, max_clashes, arr, lb, cs, debug=False):
     clashes = np.zeros(len(starts), np.int_)
     for i in range(len(starts)):
-        clashes[i] = numba_ray_trace(starts[i], ends[i], max_clashes, arr, lb, cs)
+        clashes[i] = numba_ray_trace(starts[i], ends[i], max_clashes, arr, lb, cs, debug)
 
     return clashes
 
 
 
 @njit(fastmath=True)
-def numba_ray_trace(start, end, max_clashes, arr, lb, cs):
+def numba_ray_trace(start, end, max_clashes, arr, lb, cs, debug=False):
 
     arr_start = np.zeros((3), np.float_)
     arr_start[0] = xform_1_pt(start[0], lb[0], cs[0], arr.shape[0])
@@ -550,7 +554,9 @@ def numba_ray_trace(start, end, max_clashes, arr, lb, cs):
     z = arr_start[2]
     for i in range(max_iter):
         clashes += arr[int(x+0.5), int(y+0.5), int(z+0.5)]
-        # arr[int(x+0.5), int(y+0.5), int(z+0.5)] = True
+        if ( debug ):
+            print(i, largest, slope)
+            arr[int(x+0.5), int(y+0.5), int(z+0.5)] = True
         if ( clashes >= max_clashes ):
             return clashes
         x += slope[0]

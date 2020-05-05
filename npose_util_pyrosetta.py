@@ -96,10 +96,11 @@ def get_stub_from_res(res):
     return get_stub_from_n_ca_c(from_vector(res.xyz("N")), from_vector(res.xyz("CA")), from_vector(res.xyz("C")))
 
 
-def get_atoms_and_radii(pose, subset=None):
+def get_atoms_and_radii(pose, subset=None, atom_ids_too=False):
 
     atoms = []
     radii = []
+    ids = []
 
     for seqpos in range(1, pose.size()+1):
         if ( not subset is None ):
@@ -109,6 +110,10 @@ def get_atoms_and_radii(pose, subset=None):
         for iatom in range(1, res.natoms()+1):
             atoms.append(from_vector(res.xyz(iatom)))
             radii.append(res.atom_type(iatom).lj_radius())
+            ids.append((seqpos, iatom))
+
+    if ( atom_ids_too ):
+        return np.array(atoms), np.array(radii), np.array(ids)
 
     return np.array(atoms), np.array(radii)
 
@@ -165,6 +170,44 @@ def get_sasa_surface(pose, probe_size=2.2, resl=0.5):
 
 
 
+def npose_from_pose(pose, return_npose_to_pose=False, allow_non_protein=False, allow_missing_atoms=False):
+    npose_to_pose = []
+    for i in range(1, pose.size()+1):
+        if ( allow_non_protein or pose.residue(i).is_protein() ):
+            npose_to_pose.append(i)
+
+    npose = np.zeros((len(npose_to_pose)*R, 4), np.float32)
+    npose.fill(np.nan)
+    npose[:,3] = 1
+
+    cb_fills = []
+
+    for inpose, seqpos in enumerate(npose_to_pose):
+        offset = inpose * R
+        res = pose.residue(seqpos)
+        for iat, atom_name in enumerate(ATOM_NAMES):
+            if ( not res.has( atom_name ) ):
+
+                if ( atom_name == "CB" ):
+                    cb_fills.append(inpose)
+                    continue
+                else:
+                    if ( not allow_missing_atoms ):
+                        raise ValueError('Pose missing atom %s'%atom_name)
+
+            npose[offset+iat,:3] = from_vector(res.xyz(atom_name))
+
+    if ( len(cb_fills) > 0 ):
+        cb_fills = np.array(cb_fills)
+        ncac = npose.reshape(-1, R, 4)[cb_fills][:,[N, CA, C], :3]
+        tpose = get_stubs_from_n_ca_c(ncac[:,0], ncac[:,1], ncac[:,2])
+        cbs = build_CB(tpose)
+        offsets = cb_fills*R+CB
+        npose[offsets] = cbs
+
+    if ( return_npose_to_pose ):
+        return npose, npose_to_pose
+    return npose
 
 
 

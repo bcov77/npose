@@ -169,6 +169,72 @@ def stof(string):
 
     return np.float32(result)
 
+@njit(fastmath=True, cache=True)
+def parse_aa(name3):
+
+    a = name3[0]
+    b = name3[1]
+    c = name3[2]
+
+    if ( a <= 73 ): # I
+        if ( a <= 67 ): # C
+            if ( a == 65 ): # A
+                if ( b == 83 ):
+                    if ( c == 78 ):
+                        return 78
+                    if ( c == 80 ):
+                        return 68
+                    return 88
+                if ( b == 76 and c == 65 ):
+                    return 65
+                if ( b == 82 and c == 71 ):
+                    return 82
+            if ( a == 67 and b == 89 and c == 83 ): # C
+                    return 67
+        else:
+            if ( a == 71 ): # G
+                if ( b != 76 ):
+                    return 88
+                if ( c == 85 ):
+                    return 69
+                if ( c == 89 ):
+                    return 71
+                if ( c == 78 ):
+                    return 81
+            if ( a == 72 and b == 73 and c == 83 ): # H
+                    return 72
+            if ( a == 73 and b == 76 and c == 69 ): # I
+                    return 73
+    else: 
+        if ( a <= 80 ): # P
+            if ( a == 76 ): # L
+                if ( b == 69 and c == 85 ):
+                    return 76
+                if ( b == 89 and c == 83 ):
+                    return 75
+            if ( a == 77 ): # M
+                if ( b == 69 and c == 84 ):
+                    return 77
+            if ( a == 80 ): # P
+                if ( b == 72 and c == 69 ):
+                    return 70
+                if ( b == 82 and c == 79 ):
+                    return 80
+        else:
+            if ( a == 83 and b == 69 and c == 82 ): # S
+                    return 83
+            if ( a == 84 ): # T
+                if ( c == 82 ):
+                    if ( b == 72 ):
+                        return 84
+                    if ( b == 89 ):
+                        return 89
+                    return 88
+                if ( b == 82 and c == 80 ):
+                    return 87
+            if ( a == 86 and b == 65 and c == 76 ): # V
+                    return 86
+    return 88
 
 
 # _atom = "ATOM".encode()
@@ -183,7 +249,7 @@ _null_line_size = len(_null_line)
 #  Line isn't long enough
 #  Res/resnum/chain changes
 @njit(fastmath=True, cache=True)
-def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues, scratch_chains):
+def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues, scratch_chains, scratch_aa):
 
 
     _null_line = null_line_atom_names[:_null_line_size]
@@ -227,7 +293,7 @@ def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues,
             res_ident = _empty_bytes
             continue
 
-        ident = line[17:26]
+        ident = line[17:27]
         if ( not byte_equals( ident, res_ident ) ):
             next_res = True
 
@@ -241,14 +307,11 @@ def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues,
                     # We only know how to fix missing CB
                     first_missing = byte_atom_names[missing[0]]
                     if ( len(missing) > 1 or not byte_equals(first_missing,  _CB) ):
-                        err_string = "missing atoms: "
-                        # for i in range(len(missing)):
-                        #     if ( i != 0 ):
-                        #         err_string = err_string + ", "
-                        #     err_string = err_string + byte_atom_names[missing[i]]
-
-                        # err_string = err_string + " in residue: " + res_ident + " before line: "
-                        # err_string = err_string + str(iline)
+                        print("Error! missing atoms:")
+                        for i in range(len(missing)):
+                            print(byte_atom_names[missing[i]])
+                        print("in residue:")
+                        print(res_ident)
                         assert(False)
 
                     # Fixing CB
@@ -270,6 +333,11 @@ def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues,
                         new_scratch2[i] = scratch_chains[i]
                     scratch_chains = new_scratch2
 
+                    new_scratch2 = np.zeros((old_size*2), np.byte)
+                    for i in range(old_size):
+                        new_scratch2[i] = scratch_aa[i]
+                    scratch_aa = new_scratch2
+
 
                 scratch_residues[seqpos].fill(0)
 
@@ -277,7 +345,6 @@ def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues,
             res_has_n_atoms = 0
             next_res = False
 
-        scratch_chains[seqpos] = line[21]
 
         # avoid parsing stuff we know we don't need
         if ( res_has_n_atoms == R ):
@@ -296,7 +363,10 @@ def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues,
 
         res = scratch_residues[seqpos]
         if ( res[atomi,3] != 0 ):
-            err_string = "duplicate atom: " #+ atom_name + " in residue: " + res_ident + " at line: " #+ str(iline)
+            print("Error! duplicate atom:")
+            print( atom_name )
+            print("in residue:" )
+            print( res_ident )
             assert(False)
 
         res_has_n_atoms += 1
@@ -306,15 +376,20 @@ def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues,
         res[atomi,2] = stof(line[46:54])
         res[atomi,3] = 1
 
+        if ( res_has_n_atoms == 1 ):
+            scratch_chains[seqpos] = line[21]
+            scratch_aa[seqpos] = parse_aa(line[17:20])
+
     to_ret = np.zeros((seqpos, R, 4))
     for i in range(seqpos):
         to_ret[i] = scratch_residues[i]
     
-    return to_ret.reshape(-1, 4), scratch_residues, scratch_chains
+    return to_ret.reshape(-1, 4), scratch_residues, scratch_chains, scratch_aa
 
 
 g_scratch_residues = np.zeros((1000,R,4), np.float32)
 g_scratch_chains = np.zeros((1000), np.byte)
+g_scratch_aa = np.zeros((1000), np.byte)
 # for i in range(1000):
 #     g_scratch_residues.append(np.zeros((R,4), np.float32))
 
@@ -338,22 +413,30 @@ if ( "CB" in locals() ):
     NCACCBR[3] = CB
 NCACCBR[4] = R
 
-def npose_from_file_fast(fname, chains=False):
+def npose_from_file_fast(fname, chains=False, aa=False):
     with gzopen(fname, "rb") as f:
         data = f.read()
 
     global g_scratch_residues
     global g_scratch_chains
+    global g_scratch_aa
 
-    npose, scratch, scratch_chains = read_npose_from_data( data, _null_line_atom_names, NCACCBR, g_scratch_residues, g_scratch_chains)
+    npose, scratch, scratch_chains, scratch_aa = read_npose_from_data( data, _null_line_atom_names, NCACCBR, g_scratch_residues, 
+                                                                                                g_scratch_chains, g_scratch_aa)
     npose = npose.astype(np.float32) # get rid of random numba noise
 
     g_scratch_residues = scratch
     g_scratch_chains = scratch_chains
-    if ( not chains ):
-        return npose 
-    else:
-        return npose, bytes(scratch_chains[:nsize(npose)]).decode("ascii")
+    g_scratch_aa = scratch_aa
+
+    output = [npose]
+    if ( chains ):
+        output.append(bytes(scratch_chains[:nsize(npose)]).decode("ascii"))
+    if ( aa ):
+        output.append(bytes(scratch_aa[:nsize(npose)]).decode("ascii"))
+    if ( len(output) == 1 ):
+        return output[0]
+    return output
 
 def readpdb(fname):
     n = 'het ai an rn ch ri x y z occ bfac elem'.split()
@@ -781,7 +864,7 @@ def add_to_silent(npose, tag, fname, write_header=False, score_dict=None, string
     with open(fname, "a") as f:
         add_to_silent_file_open(npose, tag, f, write_header, score_dict, string_dict)
 
-def add_to_silent_file_open(npose, tag, f, write_header=False, score_dict=None):
+def add_to_silent_file_open(npose, tag, f, write_header=False, score_dict=None, string_dict=None):
     final_dict = get_final_dict( score_dict, string_dict )
     if ( write_header ):
         f.write("SEQUENCE: A\n")
@@ -924,10 +1007,13 @@ def ca_clashgrid_from_npose(npose, atom_size, resl, padding=0):
 def clashgrid_from_tpose(tpose, atom_size, resl, padding=0):
     return clashgrid_from_points( points_from_tpose(tpose), atom_size, resl, padding)
 
-def clashgrid_from_points(points, atom_size, resl, padding=0):
+def clashgrid_from_points(points, atom_size, resl, padding=0, low_high=None):
     points = points[:,:3]
-    low = np.min(points, axis=0) - atom_size*2 - resl*2 - padding*2
-    high = np.max(points, axis=0) + atom_size*2 + resl*2 + padding*2
+    if ( low_high is None ):
+        low = np.min(points, axis=0) - atom_size*2 - resl*2 - padding*2
+        high = np.max(points, axis=0) + atom_size*2 + resl*2 + padding*2
+    else:
+        low, high = low_high
 
     clashgrid = voxel_array.VoxelArray(low, high, np.array([resl]*3), bool)
 
@@ -1391,7 +1477,7 @@ def xform_magnitude_sq_fast( trans_err2, traces, lever2 ):
     # We clip to 0 here so that negative cos_theta gets lever as error
     clipped_cos = np.clip( cos_theta, 0, 1)
 
-    err_rot2 = ( 1 - np.square(cos_theta) ) * lever2
+    err_rot2 = ( 1 - np.square(clipped_cos) ) * lever2
 
     # err = np.sqrt( err_trans2 + err_rot2 )
     err =  trans_err2 + err_rot2 
@@ -1411,7 +1497,7 @@ def xform_magnitude_sq( rts, lever2 ):
     # We clip to 0 here so that negative cos_theta gets lever as error
     clipped_cos = np.clip( cos_theta, 0, 1)
 
-    err_rot2 = ( 1 - np.square(cos_theta) ) * lever2
+    err_rot2 = ( 1 - np.square(clipped_cos) ) * lever2
 
     # err = np.sqrt( err_trans2 + err_rot2 )
     err =  err_trans2 + err_rot2 
@@ -1603,6 +1689,11 @@ def load_xforms(file):
             xforms.append(xform)
     return np.array(xforms)
 
+def save_xforms(file, xforms):
+    with open(file, "w") as f:
+        for xform in xforms:
+            f.write(" ".join("%12.8f"%x for x in flat_from_xform(xform)))
+            f.write("\n")
 
 def skew(rots):
     return 1/2 * ( rots - np.transpose( rots, axes=[0, 2, 1] ) )
@@ -1759,8 +1850,6 @@ def fast_hbond(donor_hs, donor_rays, acceptors, acceptor_rays, extra_length=0):
     temp = (diff - extra_length).clip(0, None)
     diff = np.minimum( diff, temp )
 
-    # diff -= (diff - extra_length).clip(0, None)
-
     max_diff = 0.8
 
     score = np.square( 1 - np.square( diff / max_diff ).clip(None, 1) ) * -1
@@ -1786,7 +1875,7 @@ def npose_helix_elements(is_helix):
     return ss_elements
 
 
-def nposes_from_silent(fname):
+def nposes_from_silent(fname, aa=False):
     import silent_tools
 
     silent_index = silent_tools.get_silent_index( fname )
@@ -1794,12 +1883,16 @@ def nposes_from_silent(fname):
     tags = silent_index['tags']
 
     nposes = []
+    sequences = []
 
 
     with open(fname) as sf:
         for tag in tags:
             assert( tag in silent_index['index'] )
             structure = silent_tools.get_silent_structure_file_open( sf, silent_index, tag )
+
+            if ( aa ):
+                sequences.append("".join(silent_tools.get_sequence_chunks( structure )))
 
             ncaco = silent_tools.sketch_get_atoms(structure, [0, 1, 2, 3], [0]).reshape(-1, 4, 3)
 
@@ -1823,7 +1916,10 @@ def nposes_from_silent(fname):
 
             nposes.append(npose)
 
-    return nposes, tags
+    if ( not aa ):
+        return nposes, tags
+    else:
+        return nposes, tags, sequences
 
 
 
