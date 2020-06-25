@@ -223,7 +223,11 @@ class VoxelArray:
         return numba_ray_trace_many(starts, ends, max_clashes, self.arr, self.lb, self.cs, debug)
 
     def add_to_clashgrid(self, pts, atom_radius, store_val=True ):
-        numba_make_clashgrid(pts, atom_radius, self.arr, self.lb, self.ub, self.cs, self.arr.shape, store_val)
+        if ( isinstance( atom_radius, list ) ):
+            assert(len(pts) == len(atom_radius))
+            numba_make_clashgrid_var_atom_radius(pts, atom_radius, self.arr, self.lb, self.ub, self.cs, self.arr.shape, store_val)
+        else:
+            numba_make_clashgrid(pts, atom_radius, self.arr, self.lb, self.ub, self.cs, self.arr.shape, store_val)
 
 
     def add_to_sum_grid(self, pts, atom_radius, store_val=1 ):
@@ -418,6 +422,13 @@ def numba_make_clashgrid(pts, atom_radius, arr, lb, ub, cs, shape, store_val):
     for i in range(len(pts)):
         pt = pts[i]
         numba_indices_store_within_x_of(arr, store_val, atom_radius*2, pt, lb, ub, cs, shape)
+
+@njit(fastmath=True)
+def numba_make_clashgrid_var_atom_radius(pts, atom_radius, arr, lb, ub, cs, shape, store_val):
+    for i in range(len(pts)):
+        pt = pts[i]
+        radius = atom_radius[i]
+        numba_indices_store_within_x_of(arr, store_val, radius*2, pt, lb, ub, cs, shape)
 
 
 @njit(fastmath=True)
