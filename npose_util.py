@@ -413,9 +413,15 @@ if ( "CB" in locals() ):
     NCACCBR[3] = CB
 NCACCBR[4] = R
 
+def npose_from_file(fname, chains=False, aa=False):
+    return npose_from_file_fast(fname, chains, aa)
+
 def npose_from_file_fast(fname, chains=False, aa=False):
     with gzopen(fname, "rb") as f:
         data = f.read()
+    return npose_from_bytes(data, chains, aa)
+
+def npose_from_bytes(data, chains=False, aa=False):
 
     global g_scratch_residues
     global g_scratch_chains
@@ -423,7 +429,7 @@ def npose_from_file_fast(fname, chains=False, aa=False):
 
     npose, scratch, scratch_chains, scratch_aa = read_npose_from_data( data, _null_line_atom_names, NCACCBR, g_scratch_residues, 
                                                                                                 g_scratch_chains, g_scratch_aa)
-    npose = npose.astype(np.float32) # get rid of random numba noise
+    np.around(npose, 3, npose)  # get rid of random numba noise
 
     g_scratch_residues = scratch
     g_scratch_chains = scratch_chains
@@ -438,29 +444,6 @@ def npose_from_file_fast(fname, chains=False, aa=False):
         return output[0]
     return output
 
-def readpdb(fname):
-    n = 'het ai an rn ch ri x y z occ bfac elem'.split()
-    w = (6, 5, 5, 4, 2, 4, 12, 8, 8, 6, 6, 99)
-    assert len(n) is len(w)
-    compression = "gzip" if fname.endswith(".gz") else None
-    df = pd.read_fwf(fname, widths=w, names=n, compression=compression)
-    df = df.dropna(subset=['x'])
-
-    df = df[df.het == 'ATOM']
-    # df.het = df.het == 'HETATM' # slow af
-
-    # df.ai = df.ai.astype('i4')
-    # # df.an = df.an.astype('S4')  
-    # # df.rn = df.rn.astype('S3')  
-    # # df.ch = df.ch.astype('S1')  
-    # df.ri = df.ri.astype('i4')
-    # df.x = df.x.astype('f4')
-    # df.y = df.y.astype('f4')
-    # df.z = df.z.astype('f4')
-    # df.occ = df.occ.astype('f4')
-    # df.bfac = df.bfac.astype('f4')
-    # # df.elem = df.elem.astype('S4')  
-    return df
 
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
@@ -476,160 +459,8 @@ def cross(vec1, vec2):
     return result
 
 
-def get_just_my_atoms(pdpose):
-    return pdpose[pdpose.an.str.contains("^(%s)$"%('|'.join(ATOM_NAMES)))].copy()
-
-def add_my_resnum(just_my_atoms):
-    just_my_atoms['my_resnum'] = (just_my_atoms['ri'] != just_my_atoms['ri'].shift(1).fillna(-1)).cumsum()
-
-
-def atom_thing(just_my_atoms):
-
-    the_map = {}
-    for i, atom in enumerate(ATOM_NAMES):
-        the_map[atom] = i
-
-    just_my_atoms['ind'] = just_my_atoms['my_resnum']*R + just_my_atoms['an'].map(the_map)
-
-    return just_my_atoms
-
-
-
-def the_sort(just_my_atoms):
-    return just_my_atoms.sort_values('ind')
-
-def gb(just_my_atoms):
-    gb = just_my_atoms.groupby("my_resnum")
-    is_gly = gb.apply(lambda x: len(x) == R-1)
-    return is_gly
-
-def for_loop(just_my_atoms, is_gly):
-
-    cb_rows = []
-    for resnum in is_gly[is_gly].index:
-        res_df = just_my_atoms[just_my_atoms['my_resnum'] == resnum]
-        n_ca_c_df = res_df[res_df.an.str.contains("^(N|CA|C)$")]
-        n_ca_c = n_ca_c_df[['x', 'y', 'z']].values.astype('f8')
-        xform = get_stub_from_n_ca_c(n_ca_c[0], n_ca_c[1], n_ca_c[2])
-        cb = get_CB_from_xform(xform)
-        cb_row = n_ca_c_df.iloc[1].copy()
-        cb_row['an'] = 'CB'
-        cb_row['x'] = cb[0]
-        cb_row['y'] = cb[1]
-        cb_row['z'] = cb[2]
-        cb_row['ind'] = cb_row['my_resnum']*R+CB
-        cb_rows.append(cb_row)
-
-    return cb_rows
-
-def actual_append(just_my_atoms, cb_rows):
-    return just_my_atoms.append(cb_rows, sort)
-
-def actual_sort(just_my_atoms):
-    return just_my_atoms.sort_values('ind')
-
-def appenddd(just_my_atoms, cb_rows):
-    if ( len(cb_rows) > 0 ):
-        just_my_atoms = actual_append(just_my_atoms, cb_rows) #just_my_atoms.append(cb_rows)
-        just_my_atoms = actual_sort(just_my_atoms) #just_my_atoms.sort_values('ind')
-    return just_my_atoms
-
-def fix_gly(just_my_atoms):
-    # gb = just_my_atoms.groupby("my_resnum")
-    # is_gly = gb.apply(lambda x: len(x) == R-1)
-
-    is_gly = gb(just_my_atoms)
-
-    cb_rows = for_loop(just_my_atoms, is_gly)
-    # cb_rows = []
-    # for resnum in is_gly[is_gly].index:
-    #     res_df = just_my_atoms[just_my_atoms['my_resnum'] == resnum]
-    #     n_ca_c_df = res_df[res_df.an.str.contains("^(N|CA|C)$")]
-    #     n_ca_c = n_ca_c_df[['x', 'y', 'z']].values.astype('f8')
-    #     xform = get_stub_from_n_ca_c(n_ca_c[0], n_ca_c[1], n_ca_c[2])
-    #     cb = get_CB_from_xform(xform)
-    #     cb_row = n_ca_c_df.iloc[1].copy()
-    #     cb_row['an'] = 'CB'
-    #     cb_row['x'] = cb[0]
-    #     cb_row['y'] = cb[1]
-    #     cb_row['z'] = cb[2]
-    #     cb_row['ind'] = cb_row['my_resnum']*R+CB
-    #     cb_rows.append(cb_row)
-
-    just_my_atoms = appenddd(just_my_atoms, cb_rows)
-    # if ( len(cb_rows) > 0 ):
-    #     just_my_atoms = just_my_atoms.append(cb_rows)
-    #     just_my_atoms = just_my_atoms.sort_values('ind')
-    return just_my_atoms
-
-def crafting(just_my_atoms):
-    npose = just_my_atoms[['x', 'y', 'z', 'z']].values.astype('f8')
-    npose[:,3] = 1.0
-    return npose
-
-# N CA C O CB
-# assumes unique ascending res numbers
-warnings.filterwarnings("ignore", 'This pattern has match groups')
-def npose_from_file(fname):
-    pdpose = readpdb(fname)
-
-    # This evaluates to a regex that looks like this "^(N|CA|CB|C|O)$"
-    just_my_atoms = pdpose[pdpose.an.str.contains("^(%s)$"%('|'.join(ATOM_NAMES)))].copy()
-
-    # This identifies places where the previous resnum is not equal to this resnum
-    # i.e. the first atom of every residue
-    just_my_atoms['my_resnum'] = (just_my_atoms['ri'] != just_my_atoms['ri'].shift(1).fillna(-1)).cumsum()
-
-    nres = len(just_my_atoms.my_resnum.unique())
-
-
-    # Put the atoms in the order we need them
-    the_map = {}
-    for i, atom in enumerate(ATOM_NAMES):
-        the_map[atom] = i
-
-    just_my_atoms['ind'] = just_my_atoms['my_resnum']*R + just_my_atoms['an'].map(the_map)
-    just_my_atoms = just_my_atoms.sort_values('ind')
-
-
-    if ( len(just_my_atoms) / nres != R ):
-        # just_my_atoms = fix_gly(just_my_atoms)
-        # Fix glycines
-        gb = just_my_atoms.groupby("my_resnum")
-        is_gly = gb.apply(lambda x: len(x) == R-1)
-
-        cb_rows = []
-        for resnum in is_gly[is_gly].index:
-            res_df = just_my_atoms[just_my_atoms['my_resnum'] == resnum]
-            n_ca_c_df = res_df[res_df.an.str.contains("^(N|CA|C)$")]
-            n_ca_c = n_ca_c_df[['x', 'y', 'z']].values.astype('f8')
-            xform = get_stub_from_n_ca_c(n_ca_c[0], n_ca_c[1], n_ca_c[2])
-            cb = get_CB_from_xform(xform)
-            cb_row = n_ca_c_df.iloc[1].copy()
-            cb_row['an'] = 'CB'
-            cb_row['x'] = cb[0]
-            cb_row['y'] = cb[1]
-            cb_row['z'] = cb[2]
-            cb_row['ind'] = cb_row['my_resnum']*R+CB
-            cb_rows.append(cb_row)
-
-        if ( len(cb_rows) > 0 ):
-            just_my_atoms = just_my_atoms.append(cb_rows, sort=False)
-            just_my_atoms = just_my_atoms.sort_values('ind')
-
-
-    # nres = len(just_my_atoms.my_resnum.unique())
-    # This will tosgger if you have multiple res with the same resi for instance
-    assert( len(just_my_atoms) / nres == R )
-
-    # npose = crafting(just_my_atoms)
-    npose = just_my_atoms[['x', 'y', 'z', 'z']].values.astype('f8')
-    npose[:,3] = 1.0
-
-    return npose
-
 def build_CB(tpose):
-    CB_pos = np.array([0.52892494, -0.77445692, -1.19923854, 1.0], dtype=np.float)
+    CB_pos = np.array([0.52980185, -0.77276349, -1.19909418, 1.0], dtype=np.float)
     return tpose @ CB_pos
 
 def build_H(npose):
@@ -680,6 +511,107 @@ def build_H(npose):
     return H_coord
 
 
+# the CA C O angle is 120.8
+def build_O(npose):
+    ncac = extract_atoms(npose, [N, CA, C])
+
+    return build_O_ncac(ncac)
+
+def build_O_ncac(ncac):
+
+    # we have freedom on where to build the last O
+    # we access the freedom by deciding where to build the last N
+    # it has to be 116.2 degrees accross from N-CA
+
+    last_CA_to_C = ncac[-1,:3] - ncac[-2,:3]
+    last_CA_to_C /= np.linalg.norm(last_CA_to_C)
+
+    perp = np.cross( last_CA_to_C, np.array([1, 0, 0] ) )
+    if ( np.linalg.norm(perp) == 0 ):
+        perp = np.cross( last_CA_to_C, np.array([0, 1, 0] ) )
+    perp /= np.linalg.norm(perp)
+
+    N_sin_vect = np.cross(last_CA_to_C, perp)
+    N_sin_vect /= np.linalg.norm(N_sin_vect)
+
+    #                                    -cos(116.2)                      sin(116.2) 
+    to_last_n = last_CA_to_C * 0.44150585279174515 + N_sin_vect * 0.8972583696743285
+
+    last_n = ncac[-1].copy()
+    last_n[:3] += to_last_n
+
+    assert( np.abs(np.dot( to_last_n, -last_CA_to_C ) - np.cos(np.radians(116.2))) < 0.01 )
+
+    cacn = np.r_[ ncac[1:], last_n[None,:]].reshape(-1, 3, 4)[...,:3]
+
+    to_ca_unit = cacn[:,0] - cacn[:,1]
+    to_ca_unit /= np.linalg.norm(to_ca_unit, axis=-1)[...,None]
+
+    to_n_unit = cacn[:,2] - cacn[:,1]
+    to_n_unit /= np.linalg.norm(to_n_unit, axis=-1)[...,None]
+
+    the_cross = np.cross(to_ca_unit, to_n_unit)
+    o_sin_unit = np.cross(to_ca_unit, the_cross)
+    o_sin_unit /= np.linalg.norm(o_sin_unit, axis=-1)[...,None]
+
+    #                               cos(120.8)                      sin(120.8)
+    c_to_o_unit = to_ca_unit * -0.5120428648705714 + o_sin_unit * 0.8589598969306645
+
+    # to_anti_O = to_ca_unit + to_n_unit
+    # to_anti_O /= np.linalg.norm(to_anti_O, axis=-1)[...,None]
+
+    # to_anti_h = anti_h - cnca[:,1]
+    # to_anti_h /= np.linalg.norm(to_anti_h, axis=-1)[...,None]
+
+    o_bond_length = 1.231015
+
+    O_coord = cacn[:,1] + o_bond_length * c_to_o_unit
+
+    return O_coord
+
+
+def build_npose_from_tpose(tpose):
+    npose = np.ones((len(tpose)*R, 4), np.float64)
+
+    by_res = npose.reshape(-1, R, 4)
+
+    if ( "N" in ATOM_NAMES ):
+        by_res[:,N,:] = get_N_from_xform(tpose)
+    if ( "CA" in ATOM_NAMES ):
+        by_res[:,CA,:3] = tpose[:,:3,3]
+    if ( "C" in ATOM_NAMES ):
+        by_res[:,C,:] = get_C_from_xform(tpose)
+    if ( "CB" in ATOM_NAMES ):
+        by_res[:,CB,:] = build_CB(tpose)
+    if ( "O" in ATOM_NAMES ):
+        by_res[:,O,:3] = build_O(npose)
+
+    return npose
+
+RT_dihedral_180 = np.array( [[ 4.49319115e-01,  8.93371330e-01,  2.34256657e-16,  2.52958446e+00],
+                             [ 8.93371330e-01, -4.49319115e-01, -2.21310612e-16,  2.83850891e+00],
+                             [-9.24565618e-17,  3.08717270e-16, -1.00000000e+00,  1.11974031e-17],
+                             [ 0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  1.00000000e+00]],
+                             np.float64 )
+
+RT_rosetta_res1 = np.array( [[1.      , 0.      , 0.      , 1.458001],
+                             [0.      , 1.      , 0.      , 0.      ],
+                             [0.      , 0.      , 1.      , 0.      ],
+                             [0.      , 0.      , 0.      , 1.      ]],
+                             np.float64)
+
+
+def npose_from_length(size):
+
+    tpose = np.zeros((size, 4, 4), np.float64)
+    tpose[0] = RT_rosetta_res1
+
+    # the numerical errors are just painful here
+    for i in range(size-1):
+        tpose[i+1] = tpose[i] @ RT_dihedral_180
+
+    return build_npose_from_tpose(tpose)
+
 
 def nsize(npose):
     return int(len(npose)/R)
@@ -703,7 +635,7 @@ def get_stub_from_n_ca_c(n, ca, c):
 
     e2 = cross( e3, e1 )
 
-    stub = np.zeros((4, 4), np.float32)
+    stub = np.zeros((4, 4))
     stub[...,:3,0] = e1
     stub[...,:3,1] = e2
     stub[...,:3,2] = e3
@@ -1220,11 +1152,11 @@ def xform_from_axis_angle_deg( axis, angle ):
     return xform_from_axis_angle_rad( axis, angle * math.pi / 180 )
 
 def xform_from_axis_angle_rad( axis, angle ):
-    xform = np.zeros((4, 4))
+    xform = np.zeros((4, 4), np.float64)
     xform[3,3] = 1.0
 
-    cos = math.cos(angle)
-    sin = math.sin(angle)
+    cos = np.cos(angle, dtype=np.float64)
+    sin = np.sin(angle, dtype=np.float64)
     ux = axis[0]
     uy = axis[1]
     uz = axis[2]
@@ -1245,16 +1177,16 @@ def xform_from_axis_angle_rad( axis, angle ):
 
 
 def get_N_from_xform(xform):
-    N_pos = np.array([-1.45837285,  0, 0, 1.0])
+    N_pos = np.array([-1.45800100, 0.00000000, 0.00000000, 1.0])
     return xform @ N_pos
 
 def get_C_from_xform(xform):
-    C_pos = np.array([0.55221403, 1.41890368, 0, 1.0])
+    C_pos = np.array([0.55084745, 1.42016972, 0.00000000, 1.0])
     return xform @ C_pos
 
 @njit(fastmath=True)
 def get_CB_from_xform(xform):
-    CB_pos = np.array([0.52892494, -0.77445692, -1.19923854, 1.0], dtype=np.float32)
+    CB_pos = np.array([0.53474492, -0.76147505, -1.21079691, 1.0])
     return xform @ CB_pos
 
 def get_phi_vector(xform):
@@ -1375,7 +1307,7 @@ def get_dihedrals(atom1, atom2, atom3, atom4):
 def get_npose_phis(npose):
     npose_by_res = npose.reshape(-1,R,4)
 
-    phis = np.zeros(len(npose_by_res))
+    phis = np.zeros(len(npose_by_res), np.float64)
 
     phis[1:] = np.degrees( get_dihedrals( npose_by_res[:-1,C,:3],
                                           npose_by_res[1:,N,:3],
@@ -1388,7 +1320,7 @@ def get_npose_phis(npose):
 def get_npose_psis(npose):
     npose_by_res = npose.reshape(-1,R,4)
 
-    psis = np.zeros(len(npose_by_res))
+    psis = np.zeros(len(npose_by_res), np.float64)
 
     psis[:-1] = np.degrees( get_dihedrals( npose_by_res[:-1,N,:3],
                                           npose_by_res[:-1,CA,:3],
@@ -1882,6 +1814,12 @@ def nposes_from_silent(fname, aa=False):
 
     tags = silent_index['tags']
 
+
+    is_binary = silent_index['silent_type'] == "BINARY"
+    is_protein = silent_index['silent_type'] == "PROTEIN"
+
+    assert( is_binary ^ is_protein )
+
     nposes = []
     sequences = []
 
@@ -1894,7 +1832,18 @@ def nposes_from_silent(fname, aa=False):
             if ( aa ):
                 sequences.append("".join(silent_tools.get_sequence_chunks( structure )))
 
-            ncaco = silent_tools.sketch_get_atoms(structure, [0, 1, 2, 3], [0]).reshape(-1, 4, 3)
+            if ( is_binary ):
+                ncaco = silent_tools.sketch_get_atoms(structure, [0, 1, 2, 3]).reshape(-1, 4, 3)
+
+            if ( is_protein ):
+                ncac = silent_tools.sketch_get_ncac_protein_struct(structure).reshape(-1, 3, 3)
+                # print(ncac[0])
+                ncac_for_o = np.ones((len(ncac)*3, 4), np.float)
+                ncac_for_o[:,:3] = ncac.reshape(-1, 3)
+                ncaco = np.zeros((len(ncac), 4, 3), np.float)
+                ncaco[:,:3,:] = ncac
+                ncaco[:,3,:] = build_O_ncac(ncac_for_o)
+
 
             npose_by_res = np.zeros((len(ncaco), R, 4), np.float)
 
@@ -1911,6 +1860,10 @@ def nposes_from_silent(fname, aa=False):
                     npose_by_res[:,C,:3] = ncaco[:,2]
                 elif ( atom == "O" ):
                     npose_by_res[:,O,:3] = ncaco[:,3]
+
+            # ok, so protein silent files aren't really supported, we can only get CA right now
+            # if ( is_protein ):
+
 
             npose = npose_by_res.reshape(-1, 4)
 

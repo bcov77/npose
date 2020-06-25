@@ -170,13 +170,13 @@ def get_sasa_surface(pose, probe_size=2.2, resl=0.5):
 
 
 
-def npose_from_pose(pose, return_npose_to_pose=False, allow_non_protein=False, allow_missing_atoms=False):
+def npose_from_pose(pose, return_npose_to_pose=False, allow_non_protein=False, allow_missing_atoms=False, dtype=np.float32):
     npose_to_pose = []
     for i in range(1, pose.size()+1):
         if ( allow_non_protein or pose.residue(i).is_protein() ):
             npose_to_pose.append(i)
 
-    npose = np.zeros((len(npose_to_pose)*R, 4), np.float32)
+    npose = np.zeros((len(npose_to_pose)*R, 4), dtype)
     npose.fill(np.nan)
     npose[:,3] = 1
 
