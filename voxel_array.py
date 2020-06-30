@@ -121,7 +121,7 @@ class VoxelArray:
 
 
 
-    def dump_mask_true(self, fname, mask, resname="VOX", atname="VOXL", z=None ):
+    def dump_mask_true(self, fname, mask, resname="VOX", atname="VOXL", z=None, fraction=1 ):
 
         indices = np.array(list(np.where(mask))).T
         centers = self.indices_to_centers(indices)
@@ -131,6 +131,12 @@ class VoxelArray:
             centers_[:,:2] = centers
             centers_[:,2] = z
             centers = centers_
+
+
+        if ( fraction < 1 ):
+            mask = np.random.random(len(indices)) < fraction
+            # indices = indices[mask]
+            centers = centers[mask]
 
         f = open(fname, "w")
 
@@ -170,6 +176,7 @@ class VoxelArray:
             centers_[:,:2] = centers
             centers_[:,2] = z
             centers = centers_
+
 
         f = open(fname, "w")
 
