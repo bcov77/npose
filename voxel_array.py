@@ -264,6 +264,9 @@ class VoxelArray:
             return numba_flood_fill_3d(fill_val, overwrite_val, self.arr, self.lb, self.ub, self.cs, self.arr.shape )
         assert(False)
 
+    def flood_fill_from_here(self, fill_val, overwrite_val, start_idx):
+        return numba_flood_fill_3d_from_here(fill_val, overwrite_val, start_idx, self.arr, self.lb, self.ub, self.cs, self.arr.shape)
+
 
 @njit(fastmath=True)
 def numba_seek_to_surface(pt, normal_step, up_down_steps, fail, arr, lb, ub, cs, shape):
@@ -582,6 +585,115 @@ def numba_ray_trace(start, end, max_clashes, arr, lb, cs, debug=False):
         z += slope[2]
 
     return clashes
+
+
+
+@njit(fastmath=True)
+def _lookup_3d(null_val, loc, arr, shape):
+    if ( loc[0] == 0 or loc[0] >= shape[0]-1):
+        return null_val
+    if ( loc[1] == 0 or loc[1] >= shape[1]-1):
+        return null_val
+    if ( loc[2] == 0 or loc[2] >= shape[2]-1):
+        return null_val
+    return arr[loc[0], loc[1], loc[2]]
+
+@njit(fastmath=True)
+def _increase_ptr( ptr, offset, cur_stack, stacks, stack_sizes, generate_stack ):
+    ptr += 1
+    if ( ptr == stack_sizes[cur_stack] ):
+        offset += stack_sizes[cur_stack]
+        cur_stack += 1
+        if ( generate_stack ):
+            stacks[cur_stack] = np.zeros((stack_sizes[cur_stack], 3), np.int_)
+    return ptr, offset, cur_stack
+
+# faster flood fill but harder to write
+@njit(fastmath=True)
+def numba_flood_fill_3d_from_here(fill_val, overwrite_val, start_idx, arr, lb, ub, cs, shape ):
+
+    num_points = shape[0]*shape[1]*shape[2]
+
+    stack_size0 = num_points//100 + 2 # plus 2 so the 2nd element can't be in 2
+    stack_size1 = num_points//10 + 1
+    stack_size2 = num_points
+
+    stack0 = np.zeros((stack_size0, 3), np.int_)
+    stack1 = np.zeros((1, 3), np.int_)
+    stack2 = np.zeros((1, 3), np.int_)
+
+    stack_sizes = [stack_size0, stack_size1, stack_size2]
+    stacks = [stack0, stack1, stack2]
+
+
+    stack0[0] = start_idx
+    arr[start_idx[0], start_idx[1], start_idx[2]] = fill_val
+    stack0[0] = start_idx
+
+    process_ptr = 0
+    process_offset = 0
+    cur_process_stack = 0
+
+    set_offset = 0
+    cur_set_stack = 0
+    set_ptr = 1
+
+    while ( process_ptr < set_ptr ):
+        # print(set_ptr, stack_size0)
+
+        loc = stacks[cur_process_stack][process_ptr - process_offset]
+
+        process_ptr, process_offset, cur_process_stack = _increase_ptr( 
+                            process_ptr, process_offset, cur_process_stack, stacks, stack_sizes, False)
+
+        # right
+        loc[0] += 1
+        if ( _lookup_3d(fill_val, loc, arr, shape) == overwrite_val ):
+            arr[loc[0], loc[1], loc[2]] = fill_val
+            stacks[cur_set_stack][set_ptr - set_offset] = loc
+            set_ptr, set_offset, cur_set_stack = _increase_ptr( 
+                            set_ptr, set_offset, cur_set_stack, stacks, stack_sizes, True)
+        # left
+        loc[0] -= 2
+        if ( _lookup_3d(fill_val, loc, arr, shape) == overwrite_val ):
+            arr[loc[0], loc[1], loc[2]] = fill_val
+            stacks[cur_set_stack][set_ptr - set_offset] = loc
+            set_ptr, set_offset, cur_set_stack = _increase_ptr( 
+                            set_ptr, set_offset, cur_set_stack, stacks, stack_sizes, True)
+        # down
+        loc[0] += 1
+        loc[1] += 1
+        if ( _lookup_3d(fill_val, loc, arr, shape) == overwrite_val ):
+            arr[loc[0], loc[1], loc[2]] = fill_val
+            stacks[cur_set_stack][set_ptr - set_offset] = loc
+            set_ptr, set_offset, cur_set_stack = _increase_ptr( 
+                            set_ptr, set_offset, cur_set_stack, stacks, stack_sizes, True)
+        # up
+        loc[1] -= 2
+        if ( _lookup_3d(fill_val, loc, arr, shape) == overwrite_val ):
+            arr[loc[0], loc[1], loc[2]] = fill_val
+            stacks[cur_set_stack][set_ptr - set_offset] = loc
+            set_ptr, set_offset, cur_set_stack = _increase_ptr( 
+                            set_ptr, set_offset, cur_set_stack, stacks, stack_sizes, True)
+        # forward
+        loc[1] += 1
+        loc[2] += 1
+        if ( _lookup_3d(fill_val, loc, arr, shape) == overwrite_val ):
+            arr[loc[0], loc[1], loc[2]] = fill_val
+            stacks[cur_set_stack][set_ptr - set_offset] = loc
+            set_ptr, set_offset, cur_set_stack = _increase_ptr( 
+                            set_ptr, set_offset, cur_set_stack, stacks, stack_sizes, True)
+        # backward
+        loc[2] -= 2
+        if ( _lookup_3d(fill_val, loc, arr, shape) == overwrite_val ):
+            arr[loc[0], loc[1], loc[2]] = fill_val
+            stacks[cur_set_stack][set_ptr - set_offset] = loc
+            set_ptr, set_offset, cur_set_stack = _increase_ptr( 
+                            set_ptr, set_offset, cur_set_stack, stacks, stack_sizes, True)
+        loc[2] += 1
+
+
+
 
 
 
