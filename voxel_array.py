@@ -59,15 +59,11 @@ class VoxelArray:
     def floats_to_indices(self, pts, out=None):
         if ( out is None ):
             out = np.zeros((len(pts), self.dim), dtype=np.int)
-        for i in range(self.dim):
-            out[:,i] = np.clip( (pts[:,i] - self.lb[i] ) / self.cs[i], 0, self.arr.shape[i]-1)
-        return out
+
+        return xform_vectors_w_out(pts, self.lb, self.cs, self.arr.shape, out)
 
     def indices_to_centers(self, inds ):
-        pts = np.zeros((len(inds), self.dim))
-        for i in range(self.dim):
-            pts[:,i] = (inds[:,i] + 0.5)*self.cs[i] + self.lb[i]
-        return pts
+        return numba_indices_to_centers(inds, self.lb, self.cs)
 
     def all_indices(self):
         ranges = []
@@ -268,7 +264,7 @@ class VoxelArray:
         return numba_flood_fill_3d_from_here(fill_val, overwrite_val, start_idx, self.arr, self.lb, self.ub, self.cs, self.arr.shape)
 
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_seek_to_surface(pt, normal_step, up_down_steps, fail, arr, lb, ub, cs, shape):
 
     initial_pt = lookup_vec(pt, arr, lb, cs, shape)
@@ -293,7 +289,7 @@ def numba_seek_to_surface(pt, normal_step, up_down_steps, fail, arr, lb, ub, cs,
     fail[0] = True
     return up_vec
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def distance_two_pts(pt1, pt2):
     x = pt1[0] - pt2[0]
     y = pt1[1] - pt2[1]
@@ -302,7 +298,7 @@ def distance_two_pts(pt1, pt2):
     return np.sqrt( x*x + y*y + z*z )
 
 # keep, visited locations, current distance
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_do_surface_crawl(start, normal, direction, distance, arr, lb, ub, cs, shape):
 
     up_down_steps = 20
@@ -336,7 +332,7 @@ def numba_do_surface_crawl(start, normal, direction, distance, arr, lb, ub, cs, 
     return traversed, traveled
 
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_add_to_near_grid(pts, store_vals, atom_radius, near_grid, dist_grid, lb, ub, cs, shape):
     for i in range(len(pts)):
         pt = pts[i]
@@ -344,7 +340,7 @@ def numba_add_to_near_grid(pts, store_vals, atom_radius, near_grid, dist_grid, l
         numba_store_near_grid(near_grid, dist_grid, atom_radius*2, pt, store_val, lb, ub, cs, shape)
 
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_store_near_grid(near_grid, dist_grid, _x, pt, idx, lb, ub, cs, shape):
 
     # these should like really be here
@@ -382,14 +378,14 @@ def numba_store_near_grid(near_grid, dist_grid, _x, pt, idx, lb, ub, cs, shape):
                         dist_grid[i, j, k] = dist2
 
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_make_sum_grid(pts, atom_radius, arr, lb, ub, cs, shape, store_val):
     for i in range(len(pts)):
         pt = pts[i]
         numba_indices_add_within_x_of(arr, store_val, atom_radius*2, pt, lb, ub, cs, shape)
 
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_indices_add_within_x_of(arr, to_store, _x, pt, lb, ub, cs, shape):
 
     # these should like really be here
@@ -427,13 +423,13 @@ def numba_indices_add_within_x_of(arr, to_store, _x, pt, lb, ub, cs, shape):
 
 
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_make_clashgrid(pts, atom_radius, arr, lb, ub, cs, shape, store_val):
     for i in range(len(pts)):
         pt = pts[i]
         numba_indices_store_within_x_of(arr, store_val, atom_radius*2, pt, lb, ub, cs, shape)
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_make_clashgrid_var_atom_radius(pts, atom_radius, arr, lb, ub, cs, shape, store_val):
     for i in range(len(pts)):
         pt = pts[i]
@@ -441,7 +437,7 @@ def numba_make_clashgrid_var_atom_radius(pts, atom_radius, arr, lb, ub, cs, shap
         numba_indices_store_within_x_of(arr, store_val, radius*2, pt, lb, ub, cs, shape)
 
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_indices_store_within_x_of(arr, to_store, _x, pt, lb, ub, cs, shape):
 
     # these should like really be here
@@ -477,35 +473,50 @@ def numba_indices_store_within_x_of(arr, to_store, _x, pt, lb, ub, cs, shape):
 
 
 
+
         
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_index_to_center(vec, lb, cs, shape):
     out = np.array([0, 0, 0])
     for i in range(3):
         out = (vec[i] + 0.5) * cs[i] + lb[i]
     return out
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_ind_index_to_center(i, lb, cs):
     return (i + 0.5) * cs + lb
 
-@njit(fastmath=True)
+
+@njit(fastmath=True,cache=True)
+def numba_indices_to_centers(inds, lb, cs):
+    out = np.zeros((len(inds), len(lb)), dtype=np.float_)
+    for i in range(len(inds)):
+        for j in range(len(lb)):
+            out[i, j] = (inds[i, j] + 0.5) * cs[j] + lb[j]
+    return out
+
+
+@njit(fastmath=True,cache=True)
 def xform_vectors(vecs, lb, cs, shape):
-    out = np.zeros((len(vecs), 3), dtype=np.int_)
+    out = np.zeros((len(vecs), len(lb)), dtype=np.int_)
+    return xform_vectors_w_out(vecs, lb, cs, shape, out)
+
+@njit(fastmath=True,cache=True)
+def xform_vectors_w_out(vecs, lb, cs, shape, out):
     for i in range(len(vecs)):
-        for j in range(3):
+        for j in range(len(lb)):
             out[i, j] = xform_1_pt(vecs[i, j], lb[j], cs[j], shape[j])
     return out
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def xform_vector(vec, lb, cs, shape):
     out = np.array([0, 0, 0], dtype=np.int_)
     for i in range(len(vec)):
         out[i] = xform_1_pt(vec[i], lb[i], cs[i], shape[i])
     return out
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def xform_1_pt(pt, lb, cs, shape):
     x = np.int( ( pt - lb ) / cs )
     if ( x <= 0 ):
@@ -514,14 +525,14 @@ def xform_1_pt(pt, lb, cs, shape):
         return shape-1
     return x
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def lookup_vec(vec, arr, lb, cs, shape):
     return arr[xform_1_pt(vec[0], lb[0], cs[0], shape[0]),
                xform_1_pt(vec[1], lb[1], cs[1], shape[1]),
                xform_1_pt(vec[2], lb[2], cs[2], shape[2])
             ]
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_clash_check(pts, max_clashes, arr, lb, cs):
     
     clashes = 0
@@ -540,7 +551,7 @@ def numba_clash_check(pts, max_clashes, arr, lb, cs):
     return clashes
 
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_ray_trace_many(starts, ends, max_clashes, arr, lb, cs, debug=False):
     clashes = np.zeros(len(starts), np.int_)
     for i in range(len(starts)):
@@ -550,7 +561,7 @@ def numba_ray_trace_many(starts, ends, max_clashes, arr, lb, cs, debug=False):
 
 
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_ray_trace(start, end, max_clashes, arr, lb, cs, debug=False):
 
     arr_start = np.zeros((3), np.float_)
@@ -588,7 +599,7 @@ def numba_ray_trace(start, end, max_clashes, arr, lb, cs, debug=False):
 
 
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def _lookup_3d(null_val, loc, arr, shape):
     if ( loc[0] == 0 or loc[0] >= shape[0]-1):
         return null_val
@@ -598,7 +609,7 @@ def _lookup_3d(null_val, loc, arr, shape):
         return null_val
     return arr[loc[0], loc[1], loc[2]]
 
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def _increase_ptr( ptr, offset, cur_stack, stacks, stack_sizes, generate_stack ):
     ptr += 1
     if ( ptr == stack_sizes[cur_stack] ):
@@ -609,7 +620,7 @@ def _increase_ptr( ptr, offset, cur_stack, stacks, stack_sizes, generate_stack )
     return ptr, offset, cur_stack
 
 # faster flood fill but harder to write
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_flood_fill_3d_from_here(fill_val, overwrite_val, start_idx, arr, lb, ub, cs, shape ):
 
     num_points = shape[0]*shape[1]*shape[2]
@@ -700,7 +711,7 @@ def numba_flood_fill_3d_from_here(fill_val, overwrite_val, start_idx, arr, lb, u
 # this does forward filling going from 0->hi and hi->0
 # is this a fast way to do it? no idea
 # don't allow diagonal filling for speed
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_flood_fill_3d(fill_val, overwrite_val, arr, lb, ub, cs, shape ):
 
     # for cache-coherence, we always iter on z last
@@ -746,7 +757,7 @@ def numba_flood_fill_3d(fill_val, overwrite_val, arr, lb, ub, cs, shape ):
 # this does forward filling going from 0->hi and hi->0
 # is this a fast way to do it? no idea
 # don't allow diagonal filling for speed
-@njit(fastmath=True)
+@njit(fastmath=True,cache=True)
 def numba_flood_fill_2d(fill_val, overwrite_val, arr, lb, ub, cs, shape  ):
 
     # for cache-coherence, we always iter on z last
