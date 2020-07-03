@@ -1545,7 +1545,7 @@ def slow_cluster_points(points, distance, info_every=None):
 # This would be better if it found the center of each cluster
 # This requires nxn of each cluster though
 @njit(fastmath=True, cache=True)
-def cluster_points( points, close_thresh ):
+def cluster_points( points, close_thresh, find_centers=False ):
 
     size = len(points)
     min_distances = np.zeros(size, np.float_)
@@ -1557,7 +1557,7 @@ def cluster_points( points, close_thresh ):
 
     # trans_err2 = np.zeros(len(points), dtype=np.float32)
 
-    while ( np.sqrt(min_distances.max()) > close_thresh ):
+    while ( min_distances.max() > close_thresh**2 ):
 
         distances = np.sum( np.square( points - points[cur_index] ), axis=-1 )
 
@@ -1571,6 +1571,24 @@ def cluster_points( points, close_thresh ):
         # if ( not info_every is None ):
         #     if ( len(center_indices) % info_every == 0 ):
         #         print("Cluster round %i: max_dist: %6.3f  "%(len(center_indices), np.sqrt(min_distances[cur_index])))
+
+    center_indices = np.array(center_indices, np.int_)
+
+    if ( find_centers ):
+        for icluster in range(len(center_indices)):
+            mask = assignments == icluster
+            who = np.where(mask)[0]
+            members = points[mask]
+
+            min_dist = 9e9
+            imin_dist = 0
+            for i in range(len(members)):
+                dist_sum = np.sum( np.square( members[i] - members) )
+                if ( dist_sum < min_dist ):
+                    min_dist = dist_sum
+                    imin_dist = i
+
+            center_indices[icluster] = who[imin_dist]
 
     return center_indices, assignments
 
