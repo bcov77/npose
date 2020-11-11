@@ -676,6 +676,15 @@ def get_stubs_from_npose( npose ):
 
     return get_stubs_from_n_ca_c(ns[:,:3], cas[:,:3], cs[:,:3])
 
+
+def write_pdb_info_labels(f, pdb_info_labels):
+    for resnum1 in sorted(list(pdb_info_labels)):
+        labels = pdb_info_labels[resnum1]
+        f.write("REMARK PDBinfo-LABEL:%5i "%resnum1)
+        f.write(" ".join(labels))
+        f.write("\n")
+
+
 _atom_record_format = (
     "ATOM  {atomi:5d} {atomn:^4}{idx:^1}{resn:3s} {chain:1}{resi:4d}{insert:1s}   "
     "{x:8.3f}{y:8.3f}{z:8.3f}{occ:6.2f}{b:6.2f}{seg:-4d}{elem:2s}\n"
@@ -701,7 +710,7 @@ def format_atom(
     return _atom_record_format.format(**locals())
 
 
-def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order, out_file=None):
+def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order, out_file=None, pdb_info_labels={}):
     assert(len(atoms_present) == len(pdb_order))
     local_R = len(atoms_present)
     out = out_file
@@ -720,6 +729,7 @@ def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order, 
                 y=a[1],
                 z=a[2],
                 ))
+    write_pdb_info_labels(out, pdb_info_labels)
     if ( out_file is None ):
         out.close()
 
@@ -792,11 +802,11 @@ def add_to_score_file_open(tag, f, write_header=False, score_dict=None, string_d
     f.write("SCORE:     %s        %s\n"%(scores_string, tag))
 
 
-def add_to_silent(npose, tag, fname, write_header=False, score_dict=None, string_dict=None):
+def add_to_silent(npose, tag, fname, write_header=False, score_dict=None, string_dict=None, pdb_info_labels={}):
     with open(fname, "a") as f:
-        add_to_silent_file_open(npose, tag, f, write_header, score_dict, string_dict)
+        add_to_silent_file_open(npose, tag, f, write_header, score_dict, string_dict, pdb_info_labels)
 
-def add_to_silent_file_open(npose, tag, f, write_header=False, score_dict=None, string_dict=None):
+def add_to_silent_file_open(npose, tag, f, write_header=False, score_dict=None, string_dict=None, pdb_info_labels={}):
     final_dict = get_final_dict( score_dict, string_dict )
     if ( write_header ):
         f.write("SEQUENCE: A\n")
@@ -805,6 +815,8 @@ def add_to_silent_file_open(npose, tag, f, write_header=False, score_dict=None, 
     scores_string = " ".join(final_dict.values())
     f.write("SCORE:     0.000 %s        %s\n"%(scores_string, tag))
     f.write("ANNOTATED_SEQUENCE: %s %s\n"%("A"*nsize(npose), tag))
+
+    write_pdb_info_labels(f, pdb_info_labels)
 
     Hs = build_H(npose)
 

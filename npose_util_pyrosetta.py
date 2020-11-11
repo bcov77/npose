@@ -66,7 +66,7 @@ def vector_to_xform(vec):
     xform[_y] = vec.y
     xform[_z] = vec.z
 
-    return vec
+    return xform
 
 
 def to_vector(xyz):
