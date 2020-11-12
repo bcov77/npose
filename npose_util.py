@@ -1837,7 +1837,7 @@ def npose_helix_elements(is_helix):
     return ss_elements
 
 
-def nposes_from_silent(fname, aa=False):
+def nposes_from_silent(fname, chains=False, aa=False):
     import silent_tools
 
     silent_index = silent_tools.get_silent_index( fname )
@@ -1852,6 +1852,7 @@ def nposes_from_silent(fname, aa=False):
 
     nposes = []
     sequences = []
+    the_chains = []
 
 
     with open(fname) as sf:
@@ -1899,10 +1900,16 @@ def nposes_from_silent(fname, aa=False):
 
             nposes.append(npose)
 
-    if ( not aa ):
-        return nposes, tags
-    else:
-        return nposes, tags, sequences
+            if ( chains ):
+                the_chains.append(silent_tools.get_chain_ids(structure, tag))
+
+
+    to_ret = [nposes, tags]
+    if ( chains ):
+        to_ret.append(the_chains)
+    if ( aa ):
+        to_ret.append(sequences)
+    return to_ret
 
 
 
