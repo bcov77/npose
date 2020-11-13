@@ -1876,7 +1876,7 @@ def nposes_from_silent(fname, chains=False, aa=False):
                 ncaco[:,3,:] = build_O_ncac(ncac_for_o)
 
 
-            npose_by_res = np.zeros((len(ncaco), R, 4), np.float)
+            npose_by_res = np.ones((len(ncaco), R, 4), np.float)
 
             for atom in ATOM_NAMES:
                 if ( atom == "CB" ):
