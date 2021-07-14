@@ -625,7 +625,7 @@ def itsize(itpose):
 def get_res( npose, resnum):
     return npose[R*resnum:R*(resnum+1)]
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def get_stub_from_n_ca_c(n, ca, c):
     e1 = ca - n
     e1 /= np.linalg.norm(e1)
@@ -635,32 +635,38 @@ def get_stub_from_n_ca_c(n, ca, c):
 
     e2 = cross( e3, e1 )
 
-    stub = np.zeros((4, 4))
-    stub[...,:3,0] = e1
-    stub[...,:3,1] = e2
-    stub[...,:3,2] = e3
-    stub[...,:3,3] = ca
-    stub[...,3,3] = 1.0
+    stub = np.identity(4)
+    stub[:3,0] = e1
+    stub[:3,1] = e2
+    stub[:3,2] = e3
+    stub[:3,3] = ca
 
     return stub
 
+@njit(fastmath=True, cache=True)   
 def get_stubs_from_n_ca_c(n, ca, c):
-    e1 = ca - n
-    e1 = np.divide( e1, np.linalg.norm(e1, axis=1)[..., None] )
+    out = np.zeros((len(n), 4, 4), np.float_)
+    for i in range(len(n)):
+        out[i] = get_stub_from_n_ca_c(n[i], ca[i], c[i])
+    return out
 
-    e3 = np.cross( e1, c - n, axis=1 )
-    e3 = np.divide( e3, np.linalg.norm(e3, axis=1)[..., None] )
+# def get_stubs_from_n_ca_c(n, ca, c):
+#     e1 = ca - n
+#     e1 = np.divide( e1, np.linalg.norm(e1, axis=1)[..., None] )
 
-    e2 = np.cross( e3, e1, axis=1 )
+#     e3 = np.cross( e1, c - n, axis=1 )
+#     e3 = np.divide( e3, np.linalg.norm(e3, axis=1)[..., None] )
 
-    stub = np.zeros((len(n), 4, 4))
-    stub[...,:3,0] = e1
-    stub[...,:3,1] = e2
-    stub[...,:3,2] = e3
-    stub[...,:3,3] = ca
-    stub[...,3,3] = 1.0
+#     e2 = np.cross( e3, e1, axis=1 )
 
-    return stub
+#     stub = np.zeros((len(n), 4, 4))
+#     stub[...,:3,0] = e1
+#     stub[...,:3,1] = e2
+#     stub[...,:3,2] = e3
+#     stub[...,:3,3] = ca
+#     stub[...,3,3] = 1.0
+
+#     return stub
 
 def get_stub_from_npose(npose, resnum):
     # core::kinematics::Stub( CA, N, C )
@@ -710,9 +716,13 @@ def format_atom(
     return _atom_record_format.format(**locals())
 
 
-def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order, out_file=None, pdb_info_labels={}):
+def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order, out_file=None, pdb_info_labels={}, chains=None):
     assert(len(atoms_present) == len(pdb_order))
     local_R = len(atoms_present)
+    if ( chains is None ):
+        use_chains = "A"*(len(npose)//local_R)
+    else:
+        use_chains = chains
     out = out_file
     if ( out_file is None ):
         out = open(fname, "w")
@@ -724,6 +734,7 @@ def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order, 
                 atomi=(atom_offset+i)%100000,
                 resn='ALA',
                 resi=(ri+1)%10000,
+                chain=use_chains[ri],
                 atomn=_atom_names[atomi],
                 x=a[0],
                 y=a[1],
@@ -811,6 +822,7 @@ def add_to_silent_file_open(npose, tag, f, write_header=False, score_dict=None, 
     if ( write_header ):
         f.write("SEQUENCE: A\n")
         f.write("SCORE:     score %s description\n"%(" ".join(final_dict.keys())))
+        f.write("REMARK BINARY SILENTFILE\n")
 
     scores_string = " ".join(final_dict.values())
     f.write("SCORE:     0.000 %s        %s\n"%(scores_string, tag))
@@ -1050,6 +1062,33 @@ def npose_to_will_hash_frames(npose):
 
     return frames
 
+
+def npose_to_rif_hash_frames(npose):
+    by_res = npose.reshape(-1, R, 4)
+
+
+    Ns = by_res[:,N,:3]
+    CAs = by_res[:,CA,:3]
+    Cs = by_res[:,C,:3]
+
+    e1 = (Cs+Ns)/2 - CAs
+    e1 = e1 / np.linalg.norm(e1, axis=1)[...,None]
+    e3 = np.cross( e1, Cs - CAs )
+    e3 = e3 / np.linalg.norm(e3, axis=1)[...,None]
+    e2 = np.cross( e3, e1 )
+    e2 = e2 / np.linalg.norm(e2, axis=1)[...,None]
+
+    frames = np.zeros((len(Cs), 4, 4))
+    frames[:,:3,0] = e1
+    frames[:,:3,1] = e2
+    frames[:,:3,2] = e3
+    frames[:,3,3] = 1.0
+
+    t = frames[:,:3,:3] @ np.array([-1.952799123558066, -0.2200069625712990, 1.524857]) + CAs
+    frames[:,:3,3] = t
+
+
+    return frames
 
 def npose_to_derp_hash_frames(npose):
     by_res = npose.reshape(-1, R, 4)
@@ -1837,72 +1876,101 @@ def npose_helix_elements(is_helix):
     return ss_elements
 
 
+# This is written sort of funky so that it only reads the file once
+#  and is compatible with silentdd
 def nposes_from_silent(fname, chains=False, aa=False):
     import silent_tools
 
-    silent_index = silent_tools.get_silent_index( fname )
+    _, f = silent_tools.assert_is_silent_and_get_scoreline(fname, return_f=True)
 
-    tags = silent_index['tags']
+    first = True
+    line = ""
+    while ( not line is None and not line.startswith("SCORE") ):
+        try:
+            line = next(f)
+        except:
+            line = None
 
-
-    is_binary = silent_index['silent_type'] == "BINARY"
-    is_protein = silent_index['silent_type'] == "PROTEIN"
-
-    assert( is_binary ^ is_protein )
 
     nposes = []
     sequences = []
     the_chains = []
+    tags = []
 
 
-    with open(fname) as sf:
-        for tag in tags:
-            assert( tag in silent_index['index'] )
-            structure = silent_tools.get_silent_structure_file_open( sf, silent_index, tag )
+    while ( not line is None ):
 
-            if ( aa ):
-                sequences.append("".join(silent_tools.get_sequence_chunks( structure )))
+        while ( not line is None and not line.startswith("SCORE") ):
+            try:
+                line = next(f)
+            except:
+                line = None
 
-            if ( is_binary ):
-                ncaco = silent_tools.sketch_get_atoms(structure, [0, 1, 2, 3]).reshape(-1, 4, 3)
+        if ( line is None ):
+            break
 
-            if ( is_protein ):
-                ncac = silent_tools.sketch_get_ncac_protein_struct(structure).reshape(-1, 3, 3)
-                # print(ncac[0])
-                ncac_for_o = np.ones((len(ncac)*3, 4), np.float)
-                ncac_for_o[:,:3] = ncac.reshape(-1, 3)
-                ncaco = np.zeros((len(ncac), 4, 3), np.float)
-                ncaco[:,:3,:] = ncac
-                ncaco[:,3,:] = build_O_ncac(ncac_for_o)
+        structure, line = silent_tools.rip_structure_by_lines(f, line )
 
+        tag = structure[0].split()[-1]
+        if ( tag == "description" ):
+            continue
 
-            npose_by_res = np.ones((len(ncaco), R, 4), np.float)
+        tags.append( tag )
 
-            for atom in ATOM_NAMES:
-                if ( atom == "CB" ):
-                    tpose = get_stubs_from_n_ca_c(ncaco[:,0], ncaco[:,1], ncaco[:,2])
-                    cbs = build_CB(tpose)
-                    npose_by_res[:,CB,:3] = cbs[:,:3]
-                elif ( atom == "N" ):
-                    npose_by_res[:,N,:3] = ncaco[:,0]
-                elif ( atom == "CA" ):
-                    npose_by_res[:,CA,:3] = ncaco[:,1]
-                elif ( atom == "C" ):
-                    npose_by_res[:,C,:3] = ncaco[:,2]
-                elif ( atom == "O" ):
-                    npose_by_res[:,O,:3] = ncaco[:,3]
+        if ( first ):
+            silent_type = silent_tools.detect_silent_type(structure)
 
-            # ok, so protein silent files aren't really supported, we can only get CA right now
-            # if ( is_protein ):
+            is_binary = silent_type == "BINARY"
+            is_protein = silent_type == "PROTEIN"
+
+            assert( is_binary ^ is_protein )
+            first = False
 
 
-            npose = npose_by_res.reshape(-1, 4)
+        if ( aa ):
+            sequences.append("".join(silent_tools.get_sequence_chunks( structure, tag=tags[-1] )))
 
-            nposes.append(npose)
+        if ( is_binary ):
+            ncaco = silent_tools.sketch_get_atoms(structure, [0, 1, 2, 3]).reshape(-1, 4, 3)
 
-            if ( chains ):
-                the_chains.append(silent_tools.get_chain_ids(structure, tag))
+        if ( is_protein ):
+            ncac = silent_tools.sketch_get_ncac_protein_struct(structure).reshape(-1, 3, 3)
+            # print(ncac[0])
+            ncac_for_o = np.ones((len(ncac)*3, 4), np.float)
+            ncac_for_o[:,:3] = ncac.reshape(-1, 3)
+            ncaco = np.zeros((len(ncac), 4, 3), np.float)
+            ncaco[:,:3,:] = ncac
+            ncaco[:,3,:] = build_O_ncac(ncac_for_o)
 
+
+        npose_by_res = np.ones((len(ncaco), R, 4), np.float)
+
+        for atom in ATOM_NAMES:
+            if ( atom == "CB" ):
+                tpose = get_stubs_from_n_ca_c(ncaco[:,0], ncaco[:,1], ncaco[:,2])
+                cbs = build_CB(tpose)
+                npose_by_res[:,CB,:3] = cbs[:,:3]
+            elif ( atom == "N" ):
+                npose_by_res[:,N,:3] = ncaco[:,0]
+            elif ( atom == "CA" ):
+                npose_by_res[:,CA,:3] = ncaco[:,1]
+            elif ( atom == "C" ):
+                npose_by_res[:,C,:3] = ncaco[:,2]
+            elif ( atom == "O" ):
+                npose_by_res[:,O,:3] = ncaco[:,3]
+
+        # ok, so protein silent files aren't really supported, we can only get CA right now
+        # if ( is_protein ):
+
+
+        npose = npose_by_res.reshape(-1, 4)
+
+        nposes.append(npose)
+
+        if ( chains ):
+            the_chains.append(silent_tools.get_chain_ids(structure, tag))
+
+    f.close()
 
     to_ret = [nposes, tags]
     if ( chains ):
