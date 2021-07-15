@@ -6,7 +6,15 @@ import itertools
 import numpy as np
 import random
 
-from numba import njit
+if ( hasattr( os, "FAKE_NUMBA" ) ):
+    def njit(**k):
+        def outer_wrapper(func):
+            def wrapper(*args, **kwargs):
+                return func(*args, **kwargs)
+            return wrapper
+        return outer_wrapper
+else:
+    from numba import njit
 
 # OOB gets clipped to the edges. Be careful to leave them at 0
 class VoxelArray:
