@@ -15,13 +15,23 @@ import itertools
 
 from collections import OrderedDict
 
-try:
-    from numba import njit
-    from numba import jit
-    import numba
-except:
-    sys.path.append("/home/bcov/sc/random/just_numba")
-    from numba import njit
+# os.FAKE_NUMBA
+if ( hasattr( os, "FAKE_NUMBA" ) ):
+    def njit(**k):
+        def outer_wrapper(func):
+            def wrapper(*args, **kwargs):
+                return func(*args, **kwargs)
+            return wrapper
+        return outer_wrapper
+    jit = njit
+else:
+    try:
+        from numba import njit
+        from numba import jit
+        # import numba
+    except:
+        sys.path.append("/home/bcov/sc/random/just_numba")
+        from numba import njit
 
 # silent tools is conditionally imported when needed
 sys.path.append("/home/bcov/silent_tools")
