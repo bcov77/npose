@@ -233,6 +233,16 @@ class VoxelArray:
 
         return numba_ray_trace_many(starts, ends, max_clashes, self.arr, self.lb, self.cs, debug)
 
+    def ray_trace_report_end(self, start, end, debug=False):
+        assert(self.dim == 3)
+
+        return numba_ray_trace_report_end(start, end, self.arr, self.lb, self.cs)
+
+    def ray_trace_report_end_many(self, starts, ends, debug=False):
+        assert(self.dim == 3)
+
+        return numba_ray_trace_report_end_many(starts, ends, self.arr, self.lb, self.cs)
+
     def add_to_clashgrid(self, pts, atom_radius, store_val=True ):
         if ( isinstance( atom_radius, list ) ):
             assert(len(pts) == len(atom_radius))
@@ -486,9 +496,9 @@ def numba_indices_store_within_x_of(arr, to_store, _x, pt, lb, ub, cs, shape):
 
 @njit(fastmath=True,cache=True)
 def numba_index_to_center(vec, lb, cs, shape):
-    out = np.array([0, 0, 0])
+    out = np.array([0, 0, 0], np.float_)
     for i in range(3):
-        out = (vec[i] + 0.5) * cs[i] + lb[i]
+        out[i] = (vec[i] + 0.5) * cs[i] + lb[i]
     return out
 
 @njit(fastmath=True,cache=True)
@@ -604,6 +614,47 @@ def numba_ray_trace(start, end, max_clashes, arr, lb, cs, debug=False):
         z += slope[2]
 
     return clashes
+
+
+@njit(fastmath=True,cache=True)
+def numba_ray_trace_report_end_many(starts, ends, arr, lb, cs):
+    trace_ends = np.zeros((len(starts), 3), np.float_)
+    for i in range(len(starts)):
+        trace_ends[i,:] = numba_ray_trace_report_end(starts[i], ends[i], arr, lb, cs)
+
+    return trace_ends
+
+@njit(fastmath=True,cache=True)
+def numba_ray_trace_report_end(start, end, arr, lb, cs):
+
+    arr_start = np.zeros((3), np.float_)
+    arr_start[0] = xform_1_pt(start[0], lb[0], cs[0], arr.shape[0])
+    arr_start[1] = xform_1_pt(start[1], lb[1], cs[1], arr.shape[1])
+    arr_start[2] = xform_1_pt(start[2], lb[2], cs[2], arr.shape[2])
+
+    arr_end = np.zeros((3), np.float_)
+    arr_end[0] = xform_1_pt(end[0], lb[0], cs[0], arr.shape[0])
+    arr_end[1] = xform_1_pt(end[1], lb[1], cs[1], arr.shape[1])
+    arr_end[2] = xform_1_pt(end[2], lb[2], cs[2], arr.shape[2])
+
+    slope = arr_end - arr_start
+    largest = np.max(np.abs(slope))
+    slope /= largest
+
+
+    max_iter = largest+1
+
+    x = arr_start[0]
+    y = arr_start[1]
+    z = arr_start[2]
+    for i in range(max_iter):
+        if ( arr[int(x+0.5), int(y+0.5), int(z+0.5)] ):
+            break
+        x += slope[0]
+        y += slope[1]
+        z += slope[2]
+    return numba_index_to_center(np.array([int(x+0.5), int(y+0.5), int(z+0.5)], np.int_), lb, cs, arr.shape)
+
 
 
 

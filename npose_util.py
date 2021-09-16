@@ -755,15 +755,18 @@ def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order, 
         out.close()
 
 
-def dump_pts(pts, name):
+def dump_pts(pts, name, xform=np.identity(4)):
+    pts2 = np.ones((len(pts), 4))
+    pts2[:,:3] = pts
+    pts = xform_npose(xform, pts2)[:,:3]
     with open(name, "w") as f:
         for ivert, vert in enumerate(pts):
             f.write(format_atom(ivert%100000, resi=ivert%10000, x=vert[0], y=vert[1], z=vert[2]))
 
-def dump_line(start, direction, length, name):
-    dump_lines([start], [direction], length, name)
+def dump_line(start, direction, length, name, xform=np.identity(4)):
+    dump_lines([start], [direction], length, name, xform)
 
-def dump_lines(starts, directions, length, name):
+def dump_lines(starts, directions, length, name, xform=np.identity(4)):
 
     starts = np.array(starts)
     if ( len(starts.shape) == 1 ):
@@ -784,7 +787,7 @@ def dump_lines(starts, directions, length, name):
 
     pts = np.concatenate(pt_collections)
 
-    dump_pts(pts, name)
+    dump_pts(pts, name, xform)
 
 def dump_lines_clustered(starts, directions, length, name, cluster_resl):
     centers, _ = slow_cluster_points(starts, cluster_resl)
