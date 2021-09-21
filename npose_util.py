@@ -1913,7 +1913,7 @@ def nposes_from_silent(fname, chains=False, aa=False):
 
     while ( not line is None ):
 
-        while ( not line is None and not line.startswith("SCORE") ):
+        while ( (not line is None and not line.startswith("SCORE")) or "description" in line ):
             try:
                 line = next(f)
             except:
