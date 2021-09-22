@@ -4,6 +4,7 @@ import os
 import sys
 import math
 import struct
+import numpy as np
 
 from npose_util import *
 
@@ -211,8 +212,41 @@ def npose_from_pose(pose, return_npose_to_pose=False, allow_non_protein=False, a
 
 
 
+def pose_from_npose(npose, scratch_pose=None):
+
+    size = nsize(npose)
+
+    if ( scratch_pose is None ):
+        scratch_pose = pose_from_sequence("A"*size, "centroid")
+    else:
+        assert( scratch_pose.size() == size )
 
 
+    idvec = utility.vector1_core_id_AtomID()
+    for i in range(size):
+        for j in range(7):
+            idvec.append(core.id.AtomID(j+1, i+1))
+
+
+    vec = utility.vector1_numeric_xyzVector_double_t()
+
+    Hs = build_H(npose)
+    by_res = npose.reshape(-1, R, 4)
+
+    for i in range(size):
+
+        vec.append(to_vector(by_res[i,N,:3]))
+        vec.append(to_vector(by_res[i,CA,:3]))
+        vec.append(to_vector(by_res[i,C,:3]))
+        vec.append(to_vector(by_res[i,O,:3]))
+        vec.append(to_vector(by_res[i,CB,:3]))
+        vec.append(to_vector(by_res[i,CB,:3]))
+        vec.append(to_vector(Hs[i]))
+
+
+    scratch_pose.batch_set_xyz(idvec, vec)
+
+    return scratch_pose
 
 
 
