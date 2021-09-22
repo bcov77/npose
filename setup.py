@@ -10,7 +10,7 @@ setup(
    author='Brian Coventry',
    author_email='bcoventry77@gmail.com',
    url="https://github.com/bcov77/npose",
-   download_url="https://github.com/bcov77/npose/archive/v_10.tar.gz",
+   download_url="https://github.com/bcov77/npose/archive/v1.0.tar.gz",
    packages=['npose_util', 'npose_util_pyrosetta', 'voxel_array'],  #same as name
    install_requires=['numpy'], #external packages as dependencies
 )
