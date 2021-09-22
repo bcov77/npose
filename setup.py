@@ -5,9 +5,12 @@ __version__ = "1.0"
 setup(
    name='npose',
    version='1.0',
-   description='npose is pretty chill',
-   author='bcov',
-   author_email='bcov@uw.edu',
+   description='A lightning fast way to deal with pdb backbones',
+   license='MIT',
+   author='Brian Coventry',
+   author_email='bcoventry77@gmail.com',
+   url="https://github.com/bcov77/npose",
+   download_url="https://github.com/bcov77/npose/archive/v_10.tar.gz",
    packages=['npose_util', 'npose_util_pyrosetta', 'voxel_array'],  #same as name
-   install_requires=[], #external packages as dependencies
+   install_requires=['numpy'], #external packages as dependencies
 )
