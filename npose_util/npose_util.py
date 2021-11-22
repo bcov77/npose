@@ -6,7 +6,6 @@ import math
 
 import voxel_array
 
-import pandas as pd
 import numpy as np
 import warnings
 import gzip
