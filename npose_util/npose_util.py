@@ -1888,6 +1888,69 @@ def npose_helix_elements(is_helix):
     return ss_elements
 
 
+
+def npose_from_pdblite_line(pdblite_line, pdbl_cache=None, chains=False, aa=False):
+    scaff_xform = None
+    target_xform = None
+    muts = None
+    target_pdb = None
+    scaffold_pdb = None
+    if ( pdbl_cache is None ):
+        pdbl_cache = {}
+
+    sp = pdblite_line.split()
+
+    for item in sp:
+        if ( item.startswith("SCAFFOLD_XFORM") ):
+            scaff_xform = nu.xform_from_flat( [float(x) for x in item.split(":")[1].rstrip("_").split("_")])
+        if ( item.startswith("TARGET_PDB")):
+            target_pdb = item.split(":")[1]
+        if ( item.startswith("SCAFFOLD_PDB")):
+            scaffold_pdb = item.split(":")[1]
+        if ( item.startswith("MUT")):
+            raw_mut = item.split(":")[1]
+            muts = [x.split(".") for x in raw_mut.split("_")]
+
+    assert(not scaffold_pdb is None)
+    if ( scaffold_pdb in pdbl_cache ):
+        scaffold_npose, scaffold_seq = pdbl_cache[scaffold_pdb]
+    else:
+        scaffold_npose, scaffold_seq = npose_from_file(scaffold_pdb, aa=True)
+        pdbl_cache[scaffold_pdb] = scaffold_npose, scaffold_seq
+    if ( not scaffold_xform is None ):
+        scaffold_npose = xform_npose(scaffold_xform, scaffold_npose)
+    if ( not muts is None ):
+        scaffold_seq = list(scaffold_seq)
+        for seqpos, letter in muts:
+            seqpos = int(seqpos)
+            scaffold_seq[seqpos-1] = letter
+        scaffold_seq = "".join(scaffold_seq)
+
+    assert(not target_pdb is None):
+    if ( target_pdb in pdbl_cache ):
+        target_npose, target_seq = pdbl_cache[target_pdb]
+    else:
+        target_npose, target_seq = npose_from_file(target_pdb, aa=True)
+        pdbl_cache[target_pdb] = target_npose, target_seq
+    if ( not target_xform is None ):
+        target_npose = xform_npose(target_xform, target_npose)
+
+    npose = np.concatenate(scaffold_npose, target_npose)
+    sequence = scaffold_seq + target_seq
+
+    the_chains = "A"*nsize(scaffold_npose) + "B"*nsize(target_npose)
+
+    to_ret = [npose]
+    if ( chains ):
+        to_ret.append(the_chains)
+    if ( aa ):
+        to_ret.append(sequence)
+    if ( len(to_ret) == 1 ):
+        return to_ret[0]
+    return to_ret
+
+
+
 # This is written sort of funky so that it only reads the file once
 #  and is compatible with silentdd
 def nposes_from_silent(fname, chains=False, aa=False):
@@ -1909,6 +1972,7 @@ def nposes_from_silent(fname, chains=False, aa=False):
     the_chains = []
     tags = []
 
+    pdbl_cache = {}
 
     while ( not line is None ):
 
@@ -1977,10 +2041,30 @@ def nposes_from_silent(fname, chains=False, aa=False):
 
         npose = npose_by_res.reshape(-1, 4)
 
+
+        print(nsize(npose))
+        # pdblite
+        was_pdbl = False
+        if ( nsize(npose) == 1 ):
+            pdblite_line = None
+            for this_line in structure:
+                if ( this_line.startswith("REMARK PDBinfo-LABEL") and "SCAFFOLD_PDB" in this_line ):
+                    assert(pdblite_line is None)
+                    pdblite_line = this_line
+            print("here", pdblite_line)
+            if ( not pdblite_line is None ):
+                npose, _chains, _sequence = npose_from_pdblite_line(pdblite_line, chains=True, aa=True)
+                if ( chains ):
+                    the_chains.append(_chains)
+                if ( aa ):
+                    sequences[-1] = _sequence
+                was_pdbl = True
+
+        if ( chains and not was_pdbl ):
+            the_chains.append(silent_tools.get_chain_ids(structure, tag))
+
         nposes.append(npose)
 
-        if ( chains ):
-            the_chains.append(silent_tools.get_chain_ids(structure, tag))
 
     f.close()
 
