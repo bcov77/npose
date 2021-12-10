@@ -1890,7 +1890,7 @@ def npose_helix_elements(is_helix):
 
 
 def npose_from_pdblite_line(pdblite_line, pdbl_cache=None, chains=False, aa=False):
-    scaff_xform = None
+    scaffold_xform = None
     target_xform = None
     muts = None
     target_pdb = None
@@ -1902,7 +1902,7 @@ def npose_from_pdblite_line(pdblite_line, pdbl_cache=None, chains=False, aa=Fals
 
     for item in sp:
         if ( item.startswith("SCAFFOLD_XFORM") ):
-            scaff_xform = nu.xform_from_flat( [float(x) for x in item.split(":")[1].rstrip("_").split("_")])
+            scaffold_xform = xform_from_flat( [float(x) for x in item.split(":")[1].rstrip("_").split("_")])
         if ( item.startswith("TARGET_PDB")):
             target_pdb = item.split(":")[1]
         if ( item.startswith("SCAFFOLD_PDB")):
@@ -1926,7 +1926,7 @@ def npose_from_pdblite_line(pdblite_line, pdbl_cache=None, chains=False, aa=Fals
             scaffold_seq[seqpos-1] = letter
         scaffold_seq = "".join(scaffold_seq)
 
-    assert(not target_pdb is None):
+    assert(not target_pdb is None)
     if ( target_pdb in pdbl_cache ):
         target_npose, target_seq = pdbl_cache[target_pdb]
     else:
@@ -1935,7 +1935,7 @@ def npose_from_pdblite_line(pdblite_line, pdbl_cache=None, chains=False, aa=Fals
     if ( not target_xform is None ):
         target_npose = xform_npose(target_xform, target_npose)
 
-    npose = np.concatenate(scaffold_npose, target_npose)
+    npose = np.concatenate((scaffold_npose, target_npose))
     sequence = scaffold_seq + target_seq
 
     the_chains = "A"*nsize(scaffold_npose) + "B"*nsize(target_npose)
@@ -2042,7 +2042,6 @@ def nposes_from_silent(fname, chains=False, aa=False):
         npose = npose_by_res.reshape(-1, 4)
 
 
-        print(nsize(npose))
         # pdblite
         was_pdbl = False
         if ( nsize(npose) == 1 ):
@@ -2051,7 +2050,6 @@ def nposes_from_silent(fname, chains=False, aa=False):
                 if ( this_line.startswith("REMARK PDBinfo-LABEL") and "SCAFFOLD_PDB" in this_line ):
                     assert(pdblite_line is None)
                     pdblite_line = this_line
-            print("here", pdblite_line)
             if ( not pdblite_line is None ):
                 npose, _chains, _sequence = npose_from_pdblite_line(pdblite_line, chains=True, aa=True)
                 if ( chains ):
