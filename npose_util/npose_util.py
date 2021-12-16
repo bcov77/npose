@@ -1722,6 +1722,13 @@ def get_normed_rotations(rots):
 
     # return cay( ( np.transpose( rots, axes=[0, 2, 1] ) - rots ) / ( 1 + np.trace( rots, axis1=-1, axis2=-2 ) )[:,None,None])
 
+
+def perp_vec(vec, tol=0.001):
+    perp = np.cross(vec, np.array([1, 0, 0]))
+    if ( np.sum(np.abs(perp)) < tol ):
+        perp = np.cross(vec, np.array([0, 1, 0]))
+    return purp
+
 def _F(width, max_decimals, x):
     try:
         whole_size = int(np.log10(x)) + 1
