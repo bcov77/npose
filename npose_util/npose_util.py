@@ -1727,6 +1727,7 @@ def perp_vec(vec, tol=0.001):
     perp = np.cross(vec, np.array([1, 0, 0]))
     if ( np.sum(np.abs(perp)) < tol ):
         perp = np.cross(vec, np.array([0, 1, 0]))
+    perp /= np.linalg.norm(perp)
     return perp
 
 def _F(width, max_decimals, x):
