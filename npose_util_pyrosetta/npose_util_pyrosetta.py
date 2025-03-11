@@ -97,7 +97,7 @@ def get_stub_from_res(res):
     return get_stub_from_n_ca_c(from_vector(res.xyz("N")), from_vector(res.xyz("CA")), from_vector(res.xyz("C")))
 
 
-def get_atoms_and_radii(pose, subset=None, atom_ids_too=False):
+def get_atoms_and_radii(pose, subset=None, atom_ids_too=False, heavy_only=False):
 
     atoms = []
     radii = []
@@ -108,10 +108,11 @@ def get_atoms_and_radii(pose, subset=None, atom_ids_too=False):
             if ( not subset[seqpos] ):
                 continue
         res = pose.residue(seqpos)
-        for iatom in range(1, res.natoms()+1):
+        ub = res.nheavyatoms()+1 if heavy_only else res.natoms()+1
+        for iatom in range(1, ub):
             atoms.append(from_vector(res.xyz(iatom)))
             radii.append(res.atom_type(iatom).lj_radius())
-            ids.append((seqpos, iatom))
+            ids.append([seqpos, iatom])
 
     if ( atom_ids_too ):
         return np.array(atoms), np.array(radii), np.array(ids)
@@ -171,9 +172,11 @@ def get_sasa_surface(pose, probe_size=2.2, resl=0.5):
 
 
 
-def npose_from_pose(pose, return_npose_to_pose=False, allow_non_protein=False, allow_missing_atoms=False, dtype=np.float32):
+def npose_from_pose(pose, return_npose_to_pose=False, allow_non_protein=False, allow_missing_atoms=False, dtype=np.float32, last_res1=None):
     npose_to_pose = []
-    for i in range(1, pose.size()+1):
+    if (last_res1 is None):
+        last_res1 = pose.size()
+    for i in range(1, last_res1+1):
         if ( allow_non_protein or pose.residue(i).is_protein() ):
             npose_to_pose.append(i)
 

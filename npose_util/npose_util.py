@@ -73,6 +73,11 @@ _pdb_order = []
 for name in PDB_ORDER:
     _pdb_order.append( ATOM_NAMES.index(name) )
 
+def get_pdb_order():
+    return _pdb_order
+
+def get_atom_names():
+    return _atom_names
 
 def gzopen(name, mode="rt"):
     if (name.endswith(".gz")):
@@ -258,7 +263,7 @@ _null_line_size = len(_null_line)
 #  Line isn't long enough
 #  Res/resnum/chain changes
 @njit(fastmath=True, cache=True)
-def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues, scratch_chains, scratch_aa):
+def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues, scratch_chains, scratch_aa, ignore_errors=False):
 
 
     _null_line = null_line_atom_names[:_null_line_size]
@@ -309,6 +314,7 @@ def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues,
         if ( next_res ):
             if ( res_has_n_atoms > 0 ):
 
+                res_is_good = True
                 res = scratch_residues[seqpos]
                 if ( res_has_n_atoms != R ):
                     missing = np.where(res[:,3] == 0)[0]
@@ -316,36 +322,39 @@ def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues,
                     # We only know how to fix missing CB
                     first_missing = byte_atom_names[missing[0]]
                     if ( len(missing) > 1 or not byte_equals(first_missing,  _CB) ):
-                        print("Error! missing atoms:")
-                        for i in range(len(missing)):
-                            print(byte_atom_names[missing[i]])
-                        print("in residue:")
-                        print(res_ident)
-                        assert(False)
+                        if ( res_has_n_atoms > 1 or not ignore_errors ):
+                            print("Error! missing atoms:")
+                            for i in range(len(missing)):
+                                print(byte_atom_names[missing[i]])
+                            print("in residue:")
+                            print(res_ident)
+                        res_is_good = False
+                        if ( not ignore_errors ):
+                            assert(False)
+                    else:
+                        # Fixing CB
+                        xform = get_stub_from_n_ca_c(res[N,:3], res[CA,:3], res[C,:3])
+                        res[CB] = get_CB_from_xform( xform )
 
-                    # Fixing CB
-                    xform = get_stub_from_n_ca_c(res[N,:3], res[CA,:3], res[C,:3])
-                    res[CB] = get_CB_from_xform( xform )
+                if ( res_is_good ):
+                    seqpos += 1
+                    #If we run out of scratch, double its size
+                    if ( seqpos == len(scratch_residues) ):
+                        old_size = len(scratch_residues)
+                        new_scratch = np.zeros((old_size*2, R, 4), np.float32)
+                        for i in range(old_size):
+                            new_scratch[i] = scratch_residues[i]
+                        scratch_residues = new_scratch
 
+                        new_scratch2 = np.zeros((old_size*2), np.byte)
+                        for i in range(old_size):
+                            new_scratch2[i] = scratch_chains[i]
+                        scratch_chains = new_scratch2
 
-                seqpos += 1
-                #If we run out of scratch, double its size
-                if ( seqpos == len(scratch_residues) ):
-                    old_size = len(scratch_residues)
-                    new_scratch = np.zeros((old_size*2, R, 4), np.float32)
-                    for i in range(old_size):
-                        new_scratch[i] = scratch_residues[i]
-                    scratch_residues = new_scratch
-
-                    new_scratch2 = np.zeros((old_size*2), np.byte)
-                    for i in range(old_size):
-                        new_scratch2[i] = scratch_chains[i]
-                    scratch_chains = new_scratch2
-
-                    new_scratch2 = np.zeros((old_size*2), np.byte)
-                    for i in range(old_size):
-                        new_scratch2[i] = scratch_aa[i]
-                    scratch_aa = new_scratch2
+                        new_scratch2 = np.zeros((old_size*2), np.byte)
+                        for i in range(old_size):
+                            new_scratch2[i] = scratch_aa[i]
+                        scratch_aa = new_scratch2
 
 
                 scratch_residues[seqpos].fill(0)
@@ -376,9 +385,11 @@ def read_npose_from_data( data, null_line_atom_names, NCACCBR, scratch_residues,
             print( atom_name )
             print("in residue:" )
             print( res_ident )
-            assert(False)
+            if ( not ignore_errors ):
+                assert(False)
+        else:
 
-        res_has_n_atoms += 1
+            res_has_n_atoms += 1
 
         res[atomi,0] = stof(line[30:38])
         res[atomi,1] = stof(line[38:46])
@@ -422,22 +433,22 @@ if ( "CB" in locals() ):
     NCACCBR[3] = CB
 NCACCBR[4] = R
 
-def npose_from_file(fname, chains=False, aa=False):
-    return npose_from_file_fast(fname, chains, aa)
+def npose_from_file(fname, chains=False, aa=False, ignore_errors=False):
+    return npose_from_file_fast(fname, chains, aa, ignore_errors=ignore_errors)
 
-def npose_from_file_fast(fname, chains=False, aa=False):
+def npose_from_file_fast(fname, chains=False, aa=False, ignore_errors=False):
     with gzopen(fname, "rb") as f:
         data = f.read()
-    return npose_from_bytes(data, chains, aa)
+    return npose_from_bytes(data, chains, aa, ignore_errors=ignore_errors)
 
-def npose_from_bytes(data, chains=False, aa=False):
+def npose_from_bytes(data, chains=False, aa=False, ignore_errors=False):
 
     global g_scratch_residues
     global g_scratch_chains
     global g_scratch_aa
 
     npose, scratch, scratch_chains, scratch_aa = read_npose_from_data( data, _null_line_atom_names, NCACCBR, g_scratch_residues, 
-                                                                                                g_scratch_chains, g_scratch_aa)
+                                                                                g_scratch_chains, g_scratch_aa, ignore_errors=ignore_errors)
     np.around(npose, 3, npose)  # get rid of random numba noise
 
     g_scratch_residues = scratch
@@ -469,7 +480,7 @@ def cross(vec1, vec2):
 
 
 def build_CB(tpose):
-    CB_pos = np.array([0.52980185, -0.77276349, -1.19909418, 1.0], dtype=np.float)
+    CB_pos = np.array([0.52980185, -0.77276349, -1.19909418, 1.0], dtype=float)
     return tpose @ CB_pos
 
 def build_H(npose):
@@ -725,7 +736,8 @@ def format_atom(
     return _atom_record_format.format(**locals())
 
 
-def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order, out_file=None, pdb_info_labels={}, chains=None):
+def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order, out_file=None, pdb_info_labels={}, chains=None, 
+                            multimodel_last_res=None):
     assert(len(atoms_present) == len(pdb_order))
     local_R = len(atoms_present)
     if ( chains is None ):
@@ -735,6 +747,9 @@ def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order, 
     out = out_file
     if ( out_file is None ):
         out = open(fname, "w")
+
+    if ( multimodel_last_res ):
+        out.write("MODEL\n")
     for ri, res in enumerate(npose.reshape(-1, local_R, 4)):
         atom_offset = ri*local_R+1
         for i, atomi in enumerate(pdb_order):
@@ -749,18 +764,24 @@ def dump_npdb(npose, fname, atoms_present=list(range(R)), pdb_order=_pdb_order, 
                 y=a[1],
                 z=a[2],
                 ))
+        if ( multimodel_last_res and ri in multimodel_last_res ):
+            out.write("ENDMDL\n")
+            if ( ri < len(npose)//local_R-1):
+                out.write("MODEL\n")
+
+
     write_pdb_info_labels(out, pdb_info_labels)
     if ( out_file is None ):
         out.close()
 
 
-def dump_pts(pts, name, xform=np.identity(4)):
+def dump_pts(pts, name, xform=np.identity(4), res_name="RES", atom_name="ATOM"):
     pts2 = np.ones((len(pts), 4))
     pts2[:,:3] = pts
     pts = xform_npose(xform, pts2)[:,:3]
     with open(name, "w") as f:
         for ivert, vert in enumerate(pts):
-            f.write(format_atom(ivert%100000, resi=ivert%10000, x=vert[0], y=vert[1], z=vert[2]))
+            f.write(format_atom(ivert%100000, resi=ivert%10000, x=vert[0], y=vert[1], z=vert[2], resn=res_name, atomn=atom_name))
 
 def dump_line(start, direction, length, name, xform=np.identity(4)):
     dump_lines([start], [direction], length, name, xform)
@@ -793,14 +814,17 @@ def dump_lines_clustered(starts, directions, length, name, cluster_resl):
 
     dump_lines(starts[centers], directions[centers], length, name)
 
-def get_final_dict(score_dict, string_dict):
+def get_final_dict(score_dict, string_dict, alpha=True):
     final_dict = OrderedDict()
     keys_score = [] if score_dict is None else list(score_dict)
     keys_string = [] if string_dict is None else list(string_dict)
 
     all_keys = keys_score + keys_string
 
-    argsort = sorted(range(len(all_keys)), key=lambda x: all_keys[x])
+    if ( alpha ):
+        argsort = sorted(range(len(all_keys)), key=lambda x: all_keys[x])
+    else:
+        argsort = range(len(all_keys))
 
     for idx in argsort:
         key = all_keys[idx]
@@ -813,12 +837,12 @@ def get_final_dict(score_dict, string_dict):
     return final_dict
 
 
-def add_to_score_file(tag, fname, write_header=False, score_dict=None, string_dict=None):
+def add_to_score_file(tag, fname, write_header=False, score_dict=None, string_dict=None, alpha=True):
     with open(fname, "a") as f:
-        add_to_score_file_open(tag, f, write_header, score_dict, string_dict)
+        add_to_score_file_open(tag, f, write_header, score_dict, string_dict, alpha)
 
-def add_to_score_file_open(tag, f, write_header=False, score_dict=None, string_dict=None):
-    final_dict = get_final_dict( score_dict, string_dict )
+def add_to_score_file_open(tag, f, write_header=False, score_dict=None, string_dict=None, alpha=True):
+    final_dict = get_final_dict( score_dict, string_dict, alpha )
     if ( write_header ):
         f.write("SCORE:     %s description\n"%(" ".join(final_dict.keys())))
     scores_string = " ".join(final_dict.values())
@@ -921,6 +945,9 @@ def xform_to_superimpose_nposes( mobile, mobile_resnum, ref, ref_resnum ):
 def xform_npose(xform, npose):
     return (xform @ npose[...,None]).reshape(-1, 4)
 
+def xform_npose_many(xforms, nposes):
+    return (xforms[:,None,:,:] @ nposes[...,None]).reshape(len(xforms), nposes.shape[1], 4)
+
 def extract_atoms(npose, atoms):
     return npose.reshape(-1, R, 4)[...,atoms,:].reshape(-1,4)
 
@@ -978,8 +1005,8 @@ def clashgrid_from_tpose(tpose, atom_size, resl, padding=0):
 def clashgrid_from_points(points, atom_size, resl, padding=0, low_high=None):
     points = points[:,:3]
     if ( low_high is None ):
-        low = np.min(points, axis=0) - atom_size*2 - resl*2 - padding*2
-        high = np.max(points, axis=0) + atom_size*2 + resl*2 + padding*2
+        low = np.min(points, axis=0) - np.max(atom_size)*2 - resl*2 - padding*2
+        high = np.max(points, axis=0) + np.max(atom_size)*2 + resl*2 + padding*2
     else:
         low, high = low_high
 
@@ -1525,7 +1552,7 @@ def xform_magnitude( rts, lever2 ):
 # c13 = b03 a10 * b13 a11 * b23 a12 * b33 a13
 # c23 = b03 a20 * b13 a21 * b23 a22 * b33 a23
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def mm2(inv_xform, xforms, traces, trans_err2):
 
     a = inv_xform
@@ -1853,11 +1880,11 @@ def fast_hbond(donor_hs, donor_rays, acceptors, acceptor_rays, extra_length=0):
     # dump_lines(donor_hs, h_to_a, 1, "test.pdb")
 
     h_to_a_len = np.linalg.norm( h_to_a, axis=-1 )
-    h_to_a /= h_to_a_len[:,None]
+    h_to_a /= h_to_a_len[...,None]
 
-    h_dirscore = dot( donor_rays, h_to_a ).clip(0, 1)
+    h_dirscore = np.sum( donor_rays * h_to_a, axis=-1 ).clip(0, 1)
 
-    a_dirscore = (dot( acceptor_rays, h_to_a ) * -1).clip( 0, 1 )
+    a_dirscore = (np.sum( acceptor_rays * h_to_a, axis=-1 ) * -1).clip( 0, 1 )
 
     diff = h_to_a_len - 2.00
 
@@ -1868,8 +1895,9 @@ def fast_hbond(donor_hs, donor_rays, acceptors, acceptor_rays, extra_length=0):
     # if diff > 0:
     #     diff = ( diff - extra_length ).clip(0, None)
 
-    temp = (diff - extra_length).clip(0, None)
-    diff = np.minimum( diff, temp )
+    if ( extra_length > 0 ):
+        temp = (diff - extra_length).clip(0, None)
+        diff = np.minimum( diff, temp )
 
     max_diff = 0.8
 
@@ -1894,6 +1922,65 @@ def npose_helix_elements(is_helix):
 
         offset = next_offset
     return ss_elements
+
+
+def superposition_xform(from_pts, to_pts):
+    from_pts = from_pts[:,:3]
+    to_pts = to_pts[:,:3]
+
+    from_com = np.mean(from_pts, axis=0)
+    to_com = np.mean(to_pts, axis=0)
+
+    from_pts = from_pts - from_com
+    to_pts = to_pts - to_com
+
+    A = to_pts
+    B = from_pts
+
+    C = np.matmul(A.T, B)
+
+    U,S,Vt = np.linalg.svd(C)
+
+    # ensure right handed coordinate system
+    d = np.eye(3)
+    d[-1,-1] = np.sign(np.linalg.det(Vt.T@U.T))
+
+    rot_xform = np.identity(4)
+    rot_xform[:3,:3] = U@d@Vt
+
+
+    center_xform = np.identity(4)
+    center_xform[:3,3] = -from_com
+
+    uncenter_xform = np.identity(4)
+    uncenter_xform[:3,3] = to_com
+
+    xform = uncenter_xform @ rot_xform @ center_xform
+
+    return xform
+
+
+def superposition_rmsd(from_pts, to_pts, return_xform=False):
+    if (from_pts.shape[-1] == 3):
+        from_pts1 = np.ones((len(from_pts), 4))
+        from_pts1[:,:3]= from_pts
+        from_pts = from_pts1
+    if (to_pts.shape[-1] == 3):
+        to_pts1 = np.ones((len(to_pts), 4))
+        to_pts1[:,:3]= to_pts
+        to_pts = to_pts1
+
+    xform = superposition_xform(from_pts, to_pts)
+
+    new_from_pts = xform_npose(xform, from_pts)
+
+
+    rmsd = np.sqrt(np.mean(np.sum(np.square(new_from_pts[:,:3] - to_pts[:,:3]), axis=-1)))
+
+    if ( return_xform ):
+        return rmsd, xform
+    else:
+        return rmsd
 
 
 
@@ -1961,7 +2048,7 @@ def npose_from_pdblite_line(pdblite_line, pdbl_cache=None, chains=False, aa=Fals
 
 # This is written sort of funky so that it only reads the file once
 #  and is compatible with silentdd
-def nposes_from_silent(fname, chains=False, aa=False):
+def nposes_from_silent(fname, chains=False, aa=False, ca_only=False):
     import silent_tools
 
     _, f = silent_tools.assert_is_silent_and_get_scoreline(fname, return_f=True)
@@ -1984,7 +2071,7 @@ def nposes_from_silent(fname, chains=False, aa=False):
 
     while ( not line is None ):
 
-        while ( (not line is None and not line.startswith("SCORE")) or "description" in line ):
+        while ( (not line is None and (not line.startswith("SCORE") or "description" in line ))):
             try:
                 line = next(f)
             except:
@@ -2015,6 +2102,14 @@ def nposes_from_silent(fname, chains=False, aa=False):
             sequences.append("".join(silent_tools.get_sequence_chunks( structure, tag=tags[-1] )))
 
         if ( is_binary ):
+            if ( ca_only ):
+                ca = silent_tools.sketch_get_atoms(structure, [1]).reshape(-1, 3)
+                cas = np.ones((len(ca), 4))
+                cas[:,:3] = ca
+                nposes.append(cas)
+                if ( chains ):
+                    the_chains.append(silent_tools.get_chain_ids(structure, tag))
+                continue
             ncaco = silent_tools.sketch_get_atoms(structure, [0, 1, 2, 3]).reshape(-1, 4, 3)
 
         if ( is_protein ):

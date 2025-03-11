@@ -5,6 +5,7 @@ import sys
 import itertools
 import numpy as np
 import random
+import gzip
 
 if ( hasattr( os, "FAKE_NUMBA" ) ):
     def njit(**k):
@@ -125,7 +126,7 @@ class VoxelArray:
 
 
 
-    def dump_mask_true(self, fname, mask, resname="VOX", atname="VOXL", z=None, fraction=1 ):
+    def dump_mask_true(self, fname, mask, resname="VOX", atname="VOXL", z=None, fraction=1, gz=False ):
 
         indices = np.array(list(np.where(mask))).T
         centers = self.indices_to_centers(indices)
@@ -142,14 +143,17 @@ class VoxelArray:
             # indices = indices[mask]
             centers = centers[mask]
 
-        f = open(fname, "w")
+        if ( gz ):
+            f = gzip.open(fname + ".gz", 'wb')
+        else:
+            f = open(fname, "w")
 
         anum = 1
         rnum = 1
 
         for ind, xyz in enumerate(centers):
 
-            f.write("%s%5i %4s %3s %s%4i    %8.3f%8.3f%8.3f%6.2f%6.2f %11s\n"%(
+            to_write = "%s%5i %4s %3s %s%4i    %8.3f%8.3f%8.3f%6.2f%6.2f %11s\n"%(
                 "HETATM",
                 anum,
                 atname,
@@ -160,7 +164,11 @@ class VoxelArray:
                 1.0,
                 1.0,
                 "HB"
-                ))
+                )
+            if ( gz ):
+                f.write(to_write.encode())
+            else:
+                f.write(to_write)
 
             anum += 1
             rnum += 1
@@ -223,6 +231,11 @@ class VoxelArray:
 
         return numba_clash_check(pts, max_clashes, self.arr, self.lb, self.cs)
 
+    def clash_check_many(self, sets_of_pts, max_clashes):
+        assert(self.dim == 3)
+
+        return numba_clash_check_many(sets_of_pts, max_clashes, self.arr, self.lb, self.cs)
+
     def ray_trace(self, start, end, max_clashes, debug=False):
         assert(self.dim == 3)
 
@@ -243,8 +256,13 @@ class VoxelArray:
 
         return numba_ray_trace_report_end_many(starts, ends, self.arr, self.lb, self.cs)
 
+    def ray_trace_lookup(self, start, end):
+        assert(self.dim == 3)
+
+        return numba_ray_trace_lookup(start, end, self.arr, self.lb, self.cs)
+
     def add_to_clashgrid(self, pts, atom_radius, store_val=True ):
-        if ( isinstance( atom_radius, list ) ):
+        if ( isinstance( atom_radius, (list, np.ndarray) ) ):
             assert(len(pts) == len(atom_radius))
             numba_make_clashgrid_var_atom_radius(pts, atom_radius, self.arr, self.lb, self.ub, self.cs, self.arr.shape, store_val)
         else:
@@ -253,6 +271,9 @@ class VoxelArray:
 
     def add_to_sum_grid(self, pts, atom_radius, store_val=1 ):
         numba_make_sum_grid(pts, atom_radius, self.arr, self.lb, self.ub, self.cs, self.arr.shape, store_val)
+
+    def add_to_number_grid(self, pts, atom_radius, store_vals ):
+        numba_make_number_grid(pts, atom_radius, self.arr, self.lb, self.ub, self.cs, self.arr.shape, store_vals)
 
 
     # fill the voxel array with ipt for all voxels closest to ipt.
@@ -395,6 +416,14 @@ def numba_store_near_grid(near_grid, dist_grid, _x, pt, idx, lb, ub, cs, shape):
                         near_grid[i, j, k] = idx
                         dist_grid[i, j, k] = dist2
 
+
+
+@njit(fastmath=True,cache=True)
+def numba_make_number_grid(pts, atom_radius, arr, lb, ub, cs, shape, store_vals):
+    for i in range(len(pts)):
+        pt = pts[i]
+        store_val = store_vals[i]
+        numba_indices_store_within_x_of(arr, store_val, atom_radius*2, pt, lb, ub, cs, shape)
 
 @njit(fastmath=True,cache=True)
 def numba_make_sum_grid(pts, atom_radius, arr, lb, ub, cs, shape, store_val):
@@ -551,6 +580,15 @@ def lookup_vec(vec, arr, lb, cs, shape):
             ]
 
 @njit(fastmath=True,cache=True)
+def numba_clash_check_many(sets_of_pts, max_clashes, arr, lb, cs):
+    out = np.zeros(len(sets_of_pts), np.int_)
+
+    for i in range(len(sets_of_pts)):
+        out[i] = numba_clash_check( sets_of_pts[i], max_clashes, arr, lb, cs )
+
+    return out
+
+@njit(fastmath=True,cache=True)
 def numba_clash_check(pts, max_clashes, arr, lb, cs):
     
     clashes = 0
@@ -654,6 +692,41 @@ def numba_ray_trace_report_end(start, end, arr, lb, cs):
         y += slope[1]
         z += slope[2]
     return numba_index_to_center(np.array([int(x+0.5), int(y+0.5), int(z+0.5)], np.int_), lb, cs, arr.shape)
+
+
+@njit(fastmath=True,cache=True)
+def numba_ray_trace_lookup(start, end, arr, lb, cs):
+
+    arr_start = np.zeros((3), np.float_)
+    arr_start[0] = xform_1_pt(start[0], lb[0], cs[0], arr.shape[0])
+    arr_start[1] = xform_1_pt(start[1], lb[1], cs[1], arr.shape[1])
+    arr_start[2] = xform_1_pt(start[2], lb[2], cs[2], arr.shape[2])
+
+    arr_end = np.zeros((3), np.float_)
+    arr_end[0] = xform_1_pt(end[0], lb[0], cs[0], arr.shape[0])
+    arr_end[1] = xform_1_pt(end[1], lb[1], cs[1], arr.shape[1])
+    arr_end[2] = xform_1_pt(end[2], lb[2], cs[2], arr.shape[2])
+
+    slope = arr_end - arr_start
+    largest = np.max(np.abs(slope))
+    slope /= largest
+
+
+    max_iter = largest+1
+
+    locations = []
+    values = []
+
+    x = arr_start[0]
+    y = arr_start[1]
+    z = arr_start[2]
+    for i in range(max_iter):
+        locations.append([int(x+0.5), int(y+0.5), int(z+0.5)])
+        values.append(arr[int(x+0.5), int(y+0.5), int(z+0.5)] )
+        x += slope[0]
+        y += slope[1]
+        z += slope[2]
+    return np.array(locations), np.array(values)
 
 
 
