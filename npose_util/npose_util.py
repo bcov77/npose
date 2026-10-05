@@ -665,7 +665,7 @@ def get_stub_from_n_ca_c(n, ca, c):
 
 @njit(fastmath=True, cache=True)   
 def get_stubs_from_n_ca_c(n, ca, c):
-    out = np.zeros((len(n), 4, 4), np.float_)
+    out = np.zeros((len(n), 4, 4), np.float64)
     for i in range(len(n)):
         out[i] = get_stub_from_n_ca_c(n[i], ca[i], c[i])
     return out
@@ -1638,7 +1638,7 @@ def slow_cluster_points(points, distance, info_every=None):
 def cluster_points( points, close_thresh, find_centers=False ):
 
     size = len(points)
-    min_distances = np.zeros(size, np.float_)
+    min_distances = np.zeros(size, np.float64)
     min_distances.fill(9e9)
     assignments = np.zeros(size, np.int_)
     center_indices = []
@@ -1924,6 +1924,51 @@ def npose_helix_elements(is_helix):
     return ss_elements
 
 
+
+# from can be multidimensional
+# This could replace superposition_xform but this is messy
+def superposition_xform_multi(from_pts, to_pts):
+    from_pts = from_pts[...,:3]
+    to_pts = to_pts[:,:3]
+
+    from_com = np.mean(from_pts, axis=-2)
+    to_com = np.mean(to_pts, axis=0)
+
+    from_pts = from_pts - from_com[...,None,:]
+    to_pts = to_pts - to_com
+
+    A = to_pts
+    B = from_pts
+
+    C = np.matmul(A.T, B)
+
+    U,S,Vt = np.linalg.svd(C)
+
+    # ensure right handed coordinate system
+    d = np.zeros(from_pts.shape[:-2] + (3,3))
+    d[...,:,:] = np.eye(3)
+    tran = np.arange(len(Vt.shape), dtype=int)
+    tran[-1], tran[-2] = tran[-2], tran[-1]
+    d[...,-1,-1] = np.sign(np.linalg.det(np.matmul(Vt.transpose(tran),U.transpose(tran))))
+
+    rot_xform = np.zeros(from_pts.shape[:-2] + (4,4))
+    rot_xform[...,:,:] = np.identity(4)
+    rot_xform[...,:3,:3] = np.matmul(U, np.matmul(d, Vt))
+
+
+    center_xform = np.zeros(from_pts.shape[:-2] + (4,4))
+    center_xform[...,:,:] = np.identity(4)
+    center_xform[...,:3,3] = -from_com
+
+    uncenter_xform = np.zeros(from_pts.shape[:-2] + (4,4))
+    uncenter_xform[...,:,:] = np.identity(4)
+    uncenter_xform[...,:3,3] = to_com
+
+    xform = uncenter_xform @ rot_xform @ center_xform
+
+    return xform
+
+# see also superposition_xform_multi
 def superposition_xform(from_pts, to_pts):
     from_pts = from_pts[:,:3]
     to_pts = to_pts[:,:3]
@@ -2048,10 +2093,14 @@ def npose_from_pdblite_line(pdblite_line, pdbl_cache=None, chains=False, aa=Fals
 
 # This is written sort of funky so that it only reads the file once
 #  and is compatible with silentdd
-def nposes_from_silent(fname, chains=False, aa=False, ca_only=False):
+def nposes_from_silent(fname, chains=False, aa=False, ca_only=False, f_input=None):
     import silent_tools
 
-    _, f = silent_tools.assert_is_silent_and_get_scoreline(fname, return_f=True)
+    # I know there's an easier way to do this but f_input is a late addition to silent_tools
+    if fname is not None:
+        _, f = silent_tools.assert_is_silent_and_get_scoreline(fname, return_f=True)
+    else:
+        _, f = silent_tools.assert_is_silent_and_get_scoreline(None, return_f=True, f_input=f_input)
 
     first = True
     line = ""
@@ -2115,14 +2164,14 @@ def nposes_from_silent(fname, chains=False, aa=False, ca_only=False):
         if ( is_protein ):
             ncac = silent_tools.sketch_get_ncac_protein_struct(structure).reshape(-1, 3, 3)
             # print(ncac[0])
-            ncac_for_o = np.ones((len(ncac)*3, 4), np.float)
+            ncac_for_o = np.ones((len(ncac)*3, 4), np.float64)
             ncac_for_o[:,:3] = ncac.reshape(-1, 3)
-            ncaco = np.zeros((len(ncac), 4, 3), np.float)
+            ncaco = np.zeros((len(ncac), 4, 3), np.float64)
             ncaco[:,:3,:] = ncac
             ncaco[:,3,:] = build_O_ncac(ncac_for_o)
 
 
-        npose_by_res = np.ones((len(ncaco), R, 4), np.float)
+        npose_by_res = np.ones((len(ncaco), R, 4), np.float64)
 
         for atom in ATOM_NAMES:
             if ( atom == "CB" ):
